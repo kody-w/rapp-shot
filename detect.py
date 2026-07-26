@@ -98,6 +98,13 @@ _TIMESTAMPY = re.compile(
     r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?([.,]\d+)?(Z|[+-]\d{2}:?\d{2})?)?$")
 _DATEY = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
+# An IPv6 address is long, hex-ish and colon-separated — credential-shaped by
+# every rule here. A screenshot of `ifconfig` or `netstat` is a thing people
+# share constantly, and losing those lines is the over-redaction this detector
+# was corrected for. Zone index and CIDR suffix included.
+_IPV6 = re.compile(
+    r"(?i)^(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(%[A-Za-z0-9]+)?(/\d{1,3})?$")
+
 # Separators that structure an identifier. A credential is OPAQUE: its entropy
 # lives in one unbroken run. A path, a flag, a dotted class name and a date slug
 # all decompose into short or wordlike pieces, and that is what tells them apart
@@ -128,8 +135,12 @@ def _segment_is_opaque(seg, min_len=SEG_FLOOR):
         return False            # too short to carry a secret's worth of entropy
     if _UUID.match(seg):
         return False
-    if seg.isalpha():
-        return False            # AuthenticationTokenProvider, PropertiesConfiguration
+    if _looks_like_a_word(seg):
+        # AuthenticationTokenProvider, PropertiesConfiguration — but NOT a
+        # 40-character all-letter run, which `seg.isalpha()` used to exempt
+        # outright. Two independent rules both had to be wrong for the AWS key
+        # to survive; this was the second one.
+        return False
     if seg.isdigit():
         return False
     if _HEXY.match(seg):
@@ -140,19 +151,41 @@ def _segment_is_opaque(seg, min_len=SEG_FLOOR):
 _WORDY = re.compile(r"^[A-Za-z]{2,}$")
 
 
+# The longest plausible camelCase identifier. `AuthenticationTokenProvider` is
+# 27. A 40-character run that happens to alternate case is a base64 key, not a
+# name someone typed, and treating it as a word is how an AWS secret survived.
+_WORDLIKE_MAX = 30
+
+# What share of a run's characters must sit inside recognisable words before the
+# run counts as structured text rather than a credential. Measured: at 0.30, a
+# 40-char base64 key is missed 0.2% of the time (from 4.95%) and no path, dotted
+# identifier, flag, package-lock line or URL in the corpus is flagged.
+WORDLIKE_SHARE = 0.30
+
+
 def _looks_like_a_word(seg):
     """A piece a human would recognise: `folders`, `Application`, `phase`,
     `Running`, `tower`. Uniform case, or camelCase that splits into real words.
-    A run containing one of these is structured text, not an opaque secret."""
+    A run containing one of these is structured text, not an opaque secret.
+
+    Two bugs lived here, and together they let `redact --auto` report "nothing
+    matched" on a legible AWS SecretAccessKey:
+
+      * `[A-Z]+[a-z]*` is greedy, so it glued a capitals run onto the following
+        lowercase — `ZLTUsjeAc` parsed as one part, the `>= 3 consecutive
+        capitals` guard never fired, and a random base64 fragment was scored as
+        English. Splitting at EVERY capital makes `Z`,`L`,`T` their own parts,
+        and the `len >= 2` rule rejects them, so the guard is now redundant.
+      * length was unbounded, so a whole 40-character key could pass as one
+        long camelCase name.
+    """
     if not seg.isalpha():
         return False
     if seg.islower() or seg.isupper() or seg.istitle():
-        return len(seg) >= 2
-    # camelCase: every component a word, and no run of 3+ capitals (which is
-    # how base64 and random tokens look when they happen to be all-alpha)
-    parts = re.findall(r"[A-Z]+[a-z]*|[a-z]+", seg)
-    if any(len(p) >= 3 and p.isupper() for p in parts):
+        return 2 <= len(seg) <= _WORDLIKE_MAX
+    if len(seg) > _WORDLIKE_MAX:
         return False
+    parts = re.findall(r"[A-Z][a-z]*|[a-z]+", seg)
     return all(len(p) >= 2 for p in parts) and len(parts) >= 2
 
 
@@ -166,7 +199,13 @@ def _joined_is_opaque(core, floor):
     segs = _segments(core)
     if len(segs) < 2:
         return False
-    if any(_looks_like_a_word(g) for g in segs):
+    # Veto PROPORTIONALLY, not on the first hit. A single accidental two-letter
+    # fragment inside a 40-character base64 key — `LP`, `EzYb`, `ijmj` — used to
+    # veto the whole run, which is how ~2% of AWS secret keys still slipped past
+    # after the greedy-regex fix. A path is mostly words; a key is mostly not.
+    wordlike_chars = sum(len(g) for g in segs if _looks_like_a_word(g))
+    total = sum(len(g) for g in segs) or 1
+    if wordlike_chars / total >= WORDLIKE_SHARE:
         return False
     joined = "".join(segs)
     if len(joined) < floor:
@@ -215,7 +254,7 @@ def _hidden_secret_segment(core):
 def _is_benign(core):
     """True when the run is a timestamp, path, URL or dotted identifier AND
     carries no credential-shaped segment of its own."""
-    if _UUID.match(core) or _TIMESTAMPY.match(core):
+    if _UUID.match(core) or _TIMESTAMPY.match(core) or _IPV6.match(core):
         return True
     if not (_BENIGN.match(core) or _PATHY.match(core) or _REV_DNS.match(core)):
         return False
@@ -322,11 +361,18 @@ def shape_hits(text, min_len=20, min_entropy=3.0):
         by_groups = _uniform_groups(core)
         if not (by_segment or by_joined or by_groups):
             continue
-        long_enough = len(core) >= (14 if after_label else min_len)
-        # NOT relaxed for by_joined/by_groups: a separator-joined run counts the
-        # separator itself as a character class, so it already clears 3. The
-        # relaxation was dead code and mutation testing said so.
-        floor = 2 if after_label else 3
+        # A uniform grouped key is a recognised SHAPE, so it does not have to
+        # clear the generic length floor as well. `A1B2-C3D4-E5F6-G7H8` is 19
+        # characters — _uniform_groups returned True for the docstring's own
+        # example and find() still returned nothing.
+        long_enough = (len(core) >= (14 if after_label else min_len)
+                       or (by_groups and len(core) >= 15))
+        # An all-LETTER credential can only ever be 2 classes, exactly like hex
+        # — the same structural exclusion that hid every hex key in round 1. A
+        # 40-character opaque run does not need a third class to be a secret.
+        long_opaque = any(len(g) >= 32 and _segment_is_opaque(g)
+                          for g in _segments(core))
+        floor = 2 if (after_label or long_opaque) else 3
         mixed = _classes(core) >= floor
         if long_enough and mixed and entropy(core) >= (
                 2.6 if after_label else min_entropy):

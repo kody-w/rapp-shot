@@ -77,8 +77,6 @@ echo
 
 mutate "camel lookbehind removed (interior labels)" \
   '_CAMEL_L = r"(?:(?<![A-Za-z])|(?<=[a-z0-9]))"|||_CAMEL_L = r"(?<![A-Za-z])"' 
-mutate "class floor back to 3 always (R1 cause #2)" \
-  'floor = 2 if after_label else 3|||floor = 3'
 mutate "raise min_entropy 3.0 -> 4.6" \
   'def shape_hits(text, min_len=20, min_entropy=3.0):|||def shape_hits(text, min_len=20, min_entropy=4.6):'
 mutate "raise unlabelled min_len 20 -> 34" \
@@ -106,8 +104,32 @@ mutate "drop the joined-run acceptor (R5 recall hole)" \
   'by_joined = _joined_is_opaque(core, seg_floor)|||by_joined = False'
 mutate "drop the uniform-groups acceptor (licence keys)" \
   'by_groups = _uniform_groups(core)|||by_groups = False'
-mutate "joined acceptor ignores wordlike pieces (precision)" \
-  'if any(_looks_like_a_word(g) for g in segs):|||if any(False for g in segs):'
+
+# Round 6 mutants. Three of _uniform_groups' four guards survived an
+# independent sweep — loosening the group-length range would eat MAC addresses
+# and nothing would notice — and the two constants added for the base64 recall
+# hole had no coverage at all.
+mutate "greedy word split (the AWS SecretAccessKey hole)" \
+  'parts = re.findall(r"[A-Z][a-z]*|[a-z]+", seg)|||parts = re.findall(r"[A-Z]+[a-z]*|[a-z]+", seg)'
+mutate "WORDLIKE_SHARE 0.30 -> 0.01 (veto on any word)" \
+  'WORDLIKE_SHARE = 0.30|||WORDLIKE_SHARE = 0.01'
+mutate "WORDLIKE_SHARE 0.30 -> 0.95 (almost never veto)" \
+  'WORDLIKE_SHARE = 0.30|||WORDLIKE_SHARE = 0.95'
+mutate "_WORDLIKE_MAX 30 -> 200 (a whole key can be a word)" \
+  '_WORDLIKE_MAX = 30|||_WORDLIKE_MAX = 200'
+mutate "uniform-group length range 4..8 -> 2..16 (eats MACs)" \
+  'if not 4 <= n <= 8 or any(len(g) != n for g in segs):|||if not 2 <= n <= 16 or any(len(g) != n for g in segs):'
+# Redundant against every benign string we have: a uniform run of 3+ equal-length
+# alphanumeric groups with no digit anywhere is not something that shows up on a
+# screen. Recorded rather than deleted so the claim stays checkable.
+expect_survive "uniform groups no longer need a digit" \
+  'if not any(c.isdigit() for c in core):|||if not any(True for c in core):'
+mutate "uniform groups: 3 -> 2 minimum" \
+  '    if len(segs) < 3:|||    if len(segs) < 2:'
+mutate "all-letter keys need a 3rd class again" \
+  'floor = 2 if (after_label or long_opaque) else 3|||floor = 2 if after_label else 3'
+mutate "drop the IPv6 exemption" \
+  'if _UUID.match(core) or _TIMESTAMPY.match(core) or _IPV6.match(core):|||if _UUID.match(core) or _TIMESTAMPY.match(core):'
 
 # EXPECTED SURVIVOR, recorded rather than hidden. Removing the _TIMESTAMPY
 # exemption does NOT reintroduce the bug, because the segment decomposition
