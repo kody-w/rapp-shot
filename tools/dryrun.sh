@@ -152,8 +152,15 @@ else ok "leaves an ordinary file path alone"; fi
 # End to end: destroy the pixels, then re-read the image and prove it is gone.
 "$SHOT" redact "$FIX2" --auto --out "$SHOT_HOME/red2.png" >/dev/null 2>&1
 rc2=$?
-[ -f "$SHOT_HOME/red2.png" ] && ok "second fixture redacted (rc=$rc2)" \
-  || bad "no output for the second fixture"
+if [ ! -f "$SHOT_HOME/red2.png" ]; then
+  bad "no output for the second fixture"
+elif [ "$rc2" != "0" ]; then
+  # rc was captured and then only interpolated into the PASS text. A mutant that
+  # reports a survivor on EVERY redaction (rc 4 always) sailed through.
+  bad "a clean redaction exited $rc2, expected 0 — rc 4 means it thinks a secret survived"
+else
+  ok "second fixture redacted cleanly (rc=0)"
+fi
 after2=$("$SHOT" ocr "$SHOT_HOME/red2.png" 2>/dev/null)
 leak2=0
 for s in "0123456789abcdef0123" "FEDCBA9876543210FEDC"; do
@@ -211,6 +218,27 @@ python3 "$HERE/homoglyph_check.py" "$HERE/.."
 head_ "3c. Redaction is verified by re-reading, not asserted"
 grep -q "still_present" "$SHOT" && ok "redact re-OCRs its own output before claiming success" \
   || bad "redact claims 'painted out' without checking the pixels"
+# still_present compares AFTER normalisation on purpose: an OCR that mangles the
+# survivor differently the second time must not read as a successful redaction.
+# That property had no test, so dropping normalisation from it — a false
+# all-clear on exactly the homoglyph case section 3b exists for — was invisible.
+sp=$(python3 - <<'SP'
+import sys
+sys.path.insert(0, ".")
+import detect
+tok = "gh" + "p_9zQ3LmN4bV2cD8fH1jK3pR5sT6uW0xY2aB"
+# The mangling must land INSIDE the probe window (still_present compares the
+# first max(12, len/2) characters). Mangling only a late character let the
+# "drop normalisation" mutant survive: the probe matched before reaching it.
+mangled = tok.replace("3", "З", 1).replace("O", "О")   # what Vision returns
+same = detect.still_present(tok, f"noise {tok} noise")
+mang = detect.still_present(tok, f"noise {mangled} noise")
+gone = detect.still_present(tok, "noise ---------- noise")
+print("OK" if (same and mang and not gone) else f"BAD same={same} mangled={mang} gone={gone}")
+SP
+)
+[ "$sp" = "OK" ] && ok "still_present sees a survivor even when OCR re-mangles it" \
+  || bad "still_present: $sp"
 
 # EXERCISE the survivor path rather than grepping for its message. Substituting
 # an annotate shim that copies the image through without painting anything

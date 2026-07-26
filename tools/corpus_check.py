@@ -62,6 +62,28 @@ SECRETS = [
     "AWS_SECRET rotated to xk7qz2rw9tb4vn5lmz8p",
     # only via the unlabelled shape rule at min_len=20 / min_entropy=3.0
     "Xk7Qz2Rw9Tb4Vn5Lm8Pj3Cd",
+
+    # ---- ROUND 5: credentials that carry their OWN separators ----------
+    # The round-4 precision fix judged a run only by its longest single piece,
+    # so any credential containing `/`, `-`, `.` or `+` decomposed into
+    # harmless-looking fragments and was missed. `redact --auto` left the AWS
+    # SECRET access key — the one you rotate — fully readable and printed
+    # "verified", while painting out the access key ID, which is public.
+    '"SecretAccessKey": "wJalrXUtnFEMI/M3ucXiI8+bPxRfiCYEXAMPLEKEY",',
+    "LICENCE EKSK-N1DB-9R5W-DCRS-UCDZ",
+    "device 1307eefeae7c33c3-08bd5af86e4d683b",
+    "password 3PYNCR-YQ4YS1-NJBAP7",          # .netrc group form
+    '"AccountKey": "' + "Xy9" + "/" + "kL2mNpQrStUvWxYz01" + "+" + "aB3cD4eF5gH6=" + '"',
+    "//registry.npmjs.org/:_authToken=npm_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5",
+    # camelCase labels: the dominant form in JSON/YAML, and
+    # (?<![A-Za-z]) meant they were never recognised as labels at all
+    'apiKey: "' + "Tq7vNs2wLd9xRb4mHc6y" + '"',
+    # only reachable via the camelCase lookbehind: `Key` here follows a letter,
+    # so a plain (?<![A-Za-z]) boundary does not see it as a label at all — and
+    # a 14-char value sits below every unlabelled floor. `apiKey` is NOT the
+    # discriminating case: the alternation `api[\s_.-]?key` swallows it whole
+    # and its boundaries land on the quotes.
+    '{"AccountKey": "' + "Tq7vNs2wLd9xRb" + '"}',
 ]
 
 # Fixtures that must be recognised AS A SPECIFIC THING. Detection alone is not
@@ -100,6 +122,22 @@ BENIGN = [
     "npm install --save-dev @typescript-eslint/eslint-plugin",
     "summary: 3 warnings, 1 error, deploy blocked",
     "git checkout -b feature/redaction-false-positives",
+
+    # ---- ROUND 5: content classes the corpus had never seen ------------
+    # The joined/uniform acceptors added for recall could readmit these, so
+    # they are asserted rather than assumed.
+    '"resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",',
+    'index 7a3f2b1..9c4d8e6 100644',
+    '    at com.example.svc.OrderValidator.validate(OrderValidator.java:142)',
+    'SELECT id, created_at FROM orders WHERE status = \'pending\' LIMIT 100;',
+    '.btn-primary:hover{background-color:#0f9d74;border-radius:.5rem}',
+    'export const useStore=e=>{const t=useContext(StoreCtx);return t[e]}',
+    'CompileSwift normal arm64 /Users/x/Proj/Sources/AppDelegate.swift',
+    '"engines": { "node": ">=18.17.0", "npm": ">=9.6.7" },',
+    'ProcessInfo.processInfo.environment["DYLD_FRAMEWORK_PATH"]',
+    'Deployment/Production/us-east-1/order-service/2026-07-26',
+    'https://example.com/blog/2026/07/why-we-rewrote-the-scheduler',
+    'brew install ffmpeg whisper-cpp hammerspoon --quiet --no-quarantine',
 ]
 
 # Content-addressed digests are deliberately NOT in either list: a git SHA and a

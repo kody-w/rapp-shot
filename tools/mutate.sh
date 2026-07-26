@@ -36,7 +36,11 @@ if old not in src:
 open("detect.py", "w").write(src.replace(old, new, 1))
 PY
   if [ $? = 9 ]; then
-    printf '  \033[33mSKIP  \033[0m %-46s anchor not found\n' "$name"
+    # A rotted anchor is a mutant that never ran. Treating it as SKIP and still
+    # printing "mutation-adequate" is how a cosmetic refactor of detect.py once
+    # reduced this to 3 killed with a green all-clear.
+    printf '  \033[31mNO-ANCHOR\033[0m %-43s mutation never applied\n' "$name"
+    survived=$((survived+1))
     return
   fi
   if python3 tools/corpus_check.py >/dev/null 2>&1; then
@@ -71,10 +75,10 @@ PY
 echo "Mutation testing detect.py against tools/corpus_check.py"
 echo
 
-mutate "letter-boundary lookaheads -> \\b (R1 cause #1)" \
-  '_L = r"(?<![A-Za-z])"|||_L = r"\b"'
+mutate "camel lookbehind removed (interior labels)" \
+  '_CAMEL_L = r"(?:(?<![A-Za-z])|(?<=[a-z0-9]))"|||_CAMEL_L = r"(?<![A-Za-z])"' 
 mutate "class floor back to 3 always (R1 cause #2)" \
-  'mixed = _classes(core) >= (2 if after_label else 3)|||mixed = _classes(core) >= 3'
+  'floor = 2 if after_label else 3|||floor = 3'
 mutate "raise min_entropy 3.0 -> 4.6" \
   'def shape_hits(text, min_len=20, min_entropy=3.0):|||def shape_hits(text, min_len=20, min_entropy=4.6):'
 mutate "raise unlabelled min_len 20 -> 34" \
@@ -91,6 +95,20 @@ mutate "widen the run regex floor 12 -> 46" \
   'for run in re.findall(r"[^\s'"'"'\"`,;()\[\]{}<>]{12,}", text):|||for run in re.findall(r"[^\s'"'"'\"`,;()\[\]{}<>]{46,}", text):'
 mutate "treat every run as benign (precision-only mutant)" \
   'def _is_benign(core):|||def _is_benign(core):\n    return True'
+# Round 5 mutants. The shipped set only tried 20 -> 44 for the segment floor;
+# the real boundary is 33, so a 6-character tightening of the exact constant
+# round 4 introduced was invisible to all 44 suite assertions.
+mutate "SEG_FLOOR 20 -> 26 (the boundary round 4 missed)" \
+  'SEG_FLOOR = 20|||SEG_FLOOR = 26'
+mutate "SEG_FLOOR_LABELLED 14 -> 20" \
+  'SEG_FLOOR_LABELLED = 14|||SEG_FLOOR_LABELLED = 20'
+mutate "drop the joined-run acceptor (R5 recall hole)" \
+  'by_joined = _joined_is_opaque(core, seg_floor)|||by_joined = False'
+mutate "drop the uniform-groups acceptor (licence keys)" \
+  'by_groups = _uniform_groups(core)|||by_groups = False'
+mutate "joined acceptor ignores wordlike pieces (precision)" \
+  'if any(_looks_like_a_word(g) for g in segs):|||if any(False for g in segs):'
+
 # EXPECTED SURVIVOR, recorded rather than hidden. Removing the _TIMESTAMPY
 # exemption does NOT reintroduce the bug, because the segment decomposition
 # added alongside it already refuses "2026-07-26T01:20:31Z" (every piece is

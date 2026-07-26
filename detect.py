@@ -62,12 +62,16 @@ _HOMOGLYPHS = {
 # the single most common way a credential appears on a developer's screen. That
 # made the whole relaxed "labelled" branch below dead code in practice.
 # Letter-boundaries instead, so `_`, `-`, `.` and `=` all count as separators.
-_L = r"(?<![A-Za-z])"
-_R = r"(?![A-Za-z])"
+# A label may also be an INTERIOR camelCase word — `SecretAccessKey`, `apiKey`,
+# `AccountKey` — which is how credentials are named in almost all JSON and YAML.
+# Letter-boundaries alone excluded every one of them, so the relaxed "labelled"
+# thresholds never applied to the most common config format there is.
+_CAMEL_L = r"(?:(?<![A-Za-z])|(?<=[a-z0-9]))"
+_CAMEL_R = r"(?:(?![A-Za-z])|(?=[A-Z]))"
 SECRET_LABEL = re.compile(
-    r"(?i)" + _L + r"(api[\s_.-]?key|secret|password|passwd|passphrase|token|"
-    r"bearer|credential|auth|key|private[\s_.-]?key|access[\s_.-]?key|"
-    r"client[\s_.-]?secret|conn(ection)?[\s_.-]?str(ing)?)" + _R)
+    r"(?i)" + _CAMEL_L + r"(api[\s_.-]?key|secret|password|passwd|passphrase|"
+    r"token|bearer|credential|auth|key|private[\s_.-]?key|access[\s_.-]?key|"
+    r"client[\s_.-]?secret|conn(ection)?[\s_.-]?str(ing)?)" + _CAMEL_R)
 
 # Canonical UUID: a well-known NON-secret shape. Excluded explicitly so the
 # shape rule stops destroying run ids while missing the key beside them.
@@ -105,7 +109,14 @@ def _segments(core):
     return [seg for seg in _SEP.split(core) if seg]
 
 
-def _segment_is_opaque(seg, min_len=20):
+# One constant, used everywhere. These were duplicated as a default and a
+# call-site literal, so a mutation to either left the other path intact and the
+# corpus green — the boundary looked tested and was not.
+SEG_FLOOR = 20            # an unlabelled piece must carry the entropy alone
+SEG_FLOOR_LABELLED = 14   # next to `secret`/`token`/`key`, the word is evidence
+
+
+def _segment_is_opaque(seg, min_len=SEG_FLOOR):
     """Is this ONE piece, on its own, credential-shaped?
 
     min_len drops to 14 next to an explicit `secret`/`token`/`key` label: the
@@ -126,6 +137,66 @@ def _segment_is_opaque(seg, min_len=20):
     return entropy(seg) >= 3.4 and _classes(seg) >= 2
 
 
+_WORDY = re.compile(r"^[A-Za-z]{2,}$")
+
+
+def _looks_like_a_word(seg):
+    """A piece a human would recognise: `folders`, `Application`, `phase`,
+    `Running`, `tower`. Uniform case, or camelCase that splits into real words.
+    A run containing one of these is structured text, not an opaque secret."""
+    if not seg.isalpha():
+        return False
+    if seg.islower() or seg.isupper() or seg.istitle():
+        return len(seg) >= 2
+    # camelCase: every component a word, and no run of 3+ capitals (which is
+    # how base64 and random tokens look when they happen to be all-alpha)
+    parts = re.findall(r"[A-Z]+[a-z]*|[a-z]+", seg)
+    if any(len(p) >= 3 and p.isupper() for p in parts):
+        return False
+    return all(len(p) >= 2 for p in parts) and len(parts) >= 2
+
+
+def _joined_is_opaque(core, floor):
+    """Judge the run with its separators removed.
+
+    `wJalrXUtnFEMI/M3ucXiI8+bPxRfiCYEXAMPLEKEY` is one credential that happens
+    to contain base64's `/` and `+`; splitting it hid it. Joining is only safe
+    when nothing in the run reads as a word — otherwise `/var/folders/...` and
+    `com.example.Service` would join into long opaque-looking strings too."""
+    segs = _segments(core)
+    if len(segs) < 2:
+        return False
+    if any(_looks_like_a_word(g) for g in segs):
+        return False
+    joined = "".join(segs)
+    if len(joined) < floor:
+        return False
+    if _HEXY.match(joined):
+        # hex joined from pieces is only interesting at real key length, or a
+        # git SHA split across a dash would qualify
+        return len(joined) >= 32
+    return entropy(joined) >= 3.4 and _classes(joined) >= 2
+
+
+def _uniform_groups(core):
+    """The licence-key / grouped-token shape: XXXX-XXXX-XXXX-XXXX.
+
+    Several separator-separated groups of the SAME length, alphanumeric, with a
+    digit somewhere. A date slug (`2026-07-18-tower-blindspot-r2`) and a dotted
+    class name are never uniform, so this cannot readmit them."""
+    segs = _segments(core)
+    if len(segs) < 3:
+        return False
+    n = len(segs[0])
+    if not 4 <= n <= 8 or any(len(g) != n for g in segs):
+        return False
+    if not all(g.isalnum() for g in segs):
+        return False
+    if not any(c.isdigit() for c in core):
+        return False
+    return entropy("".join(segs)) >= 3.4
+
+
 def _hidden_secret_segment(core):
     """A credential-shaped segment inside a path or URL. `/var/run/secrets/<hex>`
     is a path AND a leak, so the path check must not short-circuit past it — but
@@ -135,6 +206,9 @@ def _hidden_secret_segment(core):
     for seg in _segments(core):
         if _segment_is_opaque(seg):
             return seg
+    # `//registry.npmjs.org/:_authToken=npm_<token>` is a path AND a credential
+    if _joined_is_opaque(core, 24) or _uniform_groups(core):
+        return core
     return None
 
 
@@ -242,11 +316,18 @@ def shape_hits(text, min_len=20, min_entropy=3.0):
         # `--field-selector=status.phase=Running` back in through the same door
         # the decomposition was built to close. _segments() of a run with no
         # separator is [run], so a bare opaque token is still caught.
-        seg_floor = 14 if after_label else 20
-        if not any(_segment_is_opaque(g, seg_floor) for g in _segments(core)):
+        seg_floor = SEG_FLOOR_LABELLED if after_label else SEG_FLOOR
+        by_segment = any(_segment_is_opaque(g, seg_floor) for g in _segments(core))
+        by_joined = _joined_is_opaque(core, seg_floor)
+        by_groups = _uniform_groups(core)
+        if not (by_segment or by_joined or by_groups):
             continue
         long_enough = len(core) >= (14 if after_label else min_len)
-        mixed = _classes(core) >= (2 if after_label else 3)
+        # NOT relaxed for by_joined/by_groups: a separator-joined run counts the
+        # separator itself as a character class, so it already clears 3. The
+        # relaxation was dead code and mutation testing said so.
+        floor = 2 if after_label else 3
+        mixed = _classes(core) >= floor
         if long_enough and mixed and entropy(core) >= (
                 2.6 if after_label else min_entropy):
             hits.append((core, "labelled high-entropy run" if after_label

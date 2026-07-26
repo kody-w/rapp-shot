@@ -309,7 +309,10 @@ def cmd_redact(a):
         for label, line, matched in found:
             probe = matched or line
             if probe and detect.still_present(probe, after):
-                survivors.append((label, probe[:48]))
+                # Mask here too. stdout was masked and this was not — and this
+                # is the path that fires when redaction FAILED, i.e. the one
+                # most likely to be pasted into a bug report.
+                survivors.append((label, _mask(probe)))
     except ShimMissing as exc:
         print(f"WARNING: could not verify the result ({exc})", file=sys.stderr)
         survivors = None
