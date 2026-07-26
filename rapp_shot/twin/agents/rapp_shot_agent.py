@@ -17,7 +17,7 @@ from agents.basic_agent import BasicAgent
 __manifest__ = {
     "schema": "rapp-agent/1.0",
     "name": "rapp_shot",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "Capture, annotate and redact screenshots on-device. Finds credentials with OCR and paints them out opaquely.",
     "author": "@kody-w",
     "tags": ["screenshot", "ocr", "redaction", "privacy", "local-first"],

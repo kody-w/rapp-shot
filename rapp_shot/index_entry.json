@@ -1,7 +1,7 @@
 {
   "id": "rapp_shot",
   "name": "RAPP Shot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "summary": "Capture, annotate and redact screenshots entirely on-device. Finds credentials in the pixels with Apple's Vision OCR and paints them out opaquely BEFORE the image is shared. Redaction is a solid fill, never a blur, because blur and pixelation are reversible often enough to have leaked real credentials.",
   "tagline": "Capture, annotate and redact screenshots entirely on-device.",
   "category": "productivity",
