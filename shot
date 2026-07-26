@@ -52,6 +52,17 @@ def ensure():
         os.makedirs(d, exist_ok=True)
 
 
+def _mask(text, keep=8):
+    """A credential excerpt safe to print. The label plus a prefix is enough to
+    find the line on screen; the rest is what you are trying not to leak."""
+    if os.environ.get("SHOT_SHOW_MATCHES") == "1":
+        return text[:60]
+    t = text.strip()
+    if len(t) <= keep:
+        return t
+    return f"{t[:keep]}…[{len(t)} chars hidden]"
+
+
 class ShimMissing(RuntimeError):
     """Raised instead of returning empty. A redaction tool that degrades quietly
     tells you the image is clean and you ship the credential."""
@@ -92,6 +103,18 @@ def ocr(path):
     if "boxes" not in d:
         raise ShimMissing("OCR shim returned no boxes field — refusing to report.")
     return d
+
+
+def assert_readable(d, path):
+    """Zero recognised lines is a real Vision failure mode (a dark theme, a
+    rotated capture, an unsupported colour space). It is NOT evidence that the
+    image is clean, but `--auto` printed "nothing matched — image unchanged",
+    which is the all-clear this module's docstring calls worse than silence."""
+    if not d.get("boxes"):
+        raise ShimMissing(
+            f"OCR read 0 lines from {os.path.basename(path)}. That is not the same "
+            f"as 'no secrets' — I cannot vouch for this image. Check it by eye, or "
+            f"use --box to redact regions manually.")
 
 
 def load_patterns():
@@ -239,6 +262,7 @@ def cmd_redact(a):
     if a.auto:
         try:
             d = ocr(src)
+            assert_readable(d, src)
         except ShimMissing as exc:
             print(f"REFUSING to report on redaction: {exc}", file=sys.stderr)
             return 3
@@ -249,7 +273,10 @@ def cmd_redact(a):
                 ops.append({"op": "redact", "x": max(0, b["x"] - pad),
                             "y": max(0, b["y"] - pad),
                             "w": b["w"] + pad * 2, "h": b["h"] + pad * 2})
-                found.append((label, b["t"][:60], matched))
+                # Store a MASKED excerpt. Printing the credential is what this
+                # tool exists to prevent: stdout lands in scrollback, in shell
+                # history capture and in CI logs. --show-matches opts back in.
+                found.append((label, _mask(b["t"]), matched))
                 break
 
     for spec in (a.box or []):

@@ -83,8 +83,12 @@ dry=$("$SHOT" redact "$FIX" --auto --dry-run 2>&1)
 for want in "email" "github token" "aws access key" "openai-style key" "card-like number"; do
   echo "$dry" | grep -q "$want" && ok "detects $want" || bad "MISSED $want"
 done
-echo "$dry" | grep -q "normal line that must survive" && bad "would redact a harmless line" \
-  || ok "leaves the harmless line alone"
+# positive-first: if `dry` were empty because the command crashed, the old
+# `grep && bad || ok` form scored that as "leaves the harmless line alone".
+if [ -z "$dry" ]; then bad "dry-run produced no output at all"
+elif echo "$dry" | grep -q "normal line that must survive"; then
+  bad "would redact a harmless line"
+else ok "leaves the harmless line alone"; fi
 
 head_ "2b. The formats that got through review twice"
 
@@ -126,12 +130,20 @@ if echo "$dry2" | grep -qi "nothing matched"; then
 else
   ok "does not report an all-clear on a credential-bearing image"
 fi
-for want in "TWILIO" "access_" "FEDCBA"; do
-  if echo "$dry2" | grep -qi "$want"; then ok "flags the line carrying $want"
-  else bad "MISSED the line carrying $want"; fi
+# Assert on LABELS, not on the value: the dry-run masks matched text now, and
+# a suite that greps for the credential is asserting the leak it should prevent.
+for want in "labelled credential value" "token in a URL" "long hex run"; do
+  if echo "$dry2" | grep -qi "$want"; then ok "detects: $want"
+  else bad "MISSED the detection class: $want"; fi
 done
-if echo "$dry2" | grep -q "0123456789abcdef0123"; then ok "flags the bare hex value"
-else bad "MISSED the bare hex credential value"; fi
+n2=$(echo "$dry2" | grep -cE "^  [a-z]" || true)
+[ "${n2:-0}" -ge 4 ] && ok "$n2 credential-bearing lines flagged" \
+  || bad "only ${n2:-0} lines flagged on a fixture with 4 credentials"
+if echo "$dry2" | grep -qE "0123456789abcdef0123|FEDCBA9876543210FEDC"; then
+  bad "the dry-run PRINTED a credential value — it must be masked"
+else
+  ok "matched values are masked in the report"
+fi
 if echo "$dry2" | grep -q "3f2504e0-4f89-11d3"; then bad "flagged a canonical UUID"
 else ok "leaves a canonical UUID alone"; fi
 if echo "$dry2" | grep -q "Application Support"; then bad "flagged an ordinary file path"
@@ -150,6 +162,25 @@ done
 [ "$leak2" = "0" ] && ok "no hex credential is readable after redaction"
 if echo "$after2" | grep -qi "not a secret"; then ok "benign lines survive redaction"
 else info "benign line unreadable after redaction (over-redaction, not a leak)"; fi
+
+head_ "2c. Detector corpus — both directions, and mutation-adequate"
+# Round 4 found the detector destroyed 6 of 7 lines on a screenshot with no
+# secrets in it, and that four single-line mutations to detect.py left the
+# suite fully green. Precision and mutation-adequacy are now assertions.
+if python3 tools/corpus_check.py > "$SHOT_HOME/corpus.txt" 2>&1; then
+  ok "corpus: $(grep -oE '[0-9]+/[0-9]+ credentials found' "$SHOT_HOME/corpus.txt")"
+  ok "corpus: $(grep -oE '[0-9]+/[0-9]+ benign lines left alone' "$SHOT_HOME/corpus.txt")"
+  ok "corpus: $(grep -oE '[0-9]+/[0-9]+ recognised as the right KIND' "$SHOT_HOME/corpus.txt")"
+else
+  bad "detector corpus FAILED"
+  sed -n '1,14p' "$SHOT_HOME/corpus.txt" | sed 's/^/       /'
+fi
+if bash tools/mutate.sh > "$SHOT_HOME/mutate.txt" 2>&1; then
+  ok "mutation: $(grep -oE '[0-9]+ killed, [0-9]+ survived.*' "$SHOT_HOME/mutate.txt")"
+else
+  bad "surviving mutant — the corpus cannot detect that defect class"
+  grep SURVIVED "$SHOT_HOME/mutate.txt" | sed 's/^/       /'
+fi
 
 head_ "3. Redaction actually destroys the pixels"
 "$SHOT" redact "$FIX" --auto --out "$SHOT_HOME/red.png" >/dev/null 2>&1

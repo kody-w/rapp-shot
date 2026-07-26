@@ -85,20 +85,63 @@ _PATHY = re.compile(r"^[A-Za-z0-9._~-]+(/[A-Za-z0-9._~-]+)+/?$")
 _REV_DNS = re.compile(r"^[a-z]{2,}(\.[A-Za-z0-9-]{2,}){2,}$")
 
 
+# An ISO-8601 timestamp is 20+ characters, three character classes and high
+# entropy — indistinguishable from a credential by shape, and the single most
+# common string on a developer's screen. Redaction is per OCR LINE, so one of
+# these false positives erases the whole log line; a screenshot of an ordinary
+# log lost six lines out of seven before this existed.
+_TIMESTAMPY = re.compile(
+    r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?([.,]\d+)?(Z|[+-]\d{2}:?\d{2})?)?$")
+_DATEY = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+# Separators that structure an identifier. A credential is OPAQUE: its entropy
+# lives in one unbroken run. A path, a flag, a dotted class name and a date slug
+# all decompose into short or wordlike pieces, and that is what tells them apart
+# from a secret — not their overall length or entropy, which are the same.
+_SEP = re.compile(r"[/._\-=:?&@+~,;|\\]+")
+
+
+def _segments(core):
+    return [seg for seg in _SEP.split(core) if seg]
+
+
+def _segment_is_opaque(seg, min_len=20):
+    """Is this ONE piece, on its own, credential-shaped?
+
+    min_len drops to 14 next to an explicit `secret`/`token`/`key` label: the
+    word is the evidence, so the string does not have to carry it alone. Without
+    that relaxation the whole labelled branch below is unreachable for values
+    shorter than 20 — which is most human-chosen passwords.
+    """
+    if len(seg) < min_len:
+        return False            # too short to carry a secret's worth of entropy
+    if _UUID.match(seg):
+        return False
+    if seg.isalpha():
+        return False            # AuthenticationTokenProvider, PropertiesConfiguration
+    if seg.isdigit():
+        return False
+    if _HEXY.match(seg):
+        return True             # long hex: the R1 class
+    return entropy(seg) >= 3.4 and _classes(seg) >= 2
+
+
 def _hidden_secret_segment(core):
     """A credential-shaped segment inside a path or URL. `/var/run/secrets/<hex>`
-    is a path AND a leak; the path check must not short-circuit past it."""
-    for seg in re.split(r"[/.?&=]", core):
-        seg = seg.strip()
-        if len(seg) >= 24 and (_HEXY.match(seg) or entropy(seg) >= 3.4):
+    is a path AND a leak, so the path check must not short-circuit past it — but
+    `/var/folders/kx/8vv6qk1n0dq2rb_3xyzq7c400000gn/T/` is only a path, and the
+    old rule (any 24-char segment with entropy >= 3.4) could not tell them apart
+    because it split on fewer separators than actually structure a path."""
+    for seg in _segments(core):
+        if _segment_is_opaque(seg):
             return seg
     return None
 
 
 def _is_benign(core):
-    """True when the run is a path, URL or reverse-DNS identifier AND carries no
-    credential-shaped segment of its own."""
-    if _UUID.match(core):
+    """True when the run is a timestamp, path, URL or dotted identifier AND
+    carries no credential-shaped segment of its own."""
+    if _UUID.match(core) or _TIMESTAMPY.match(core):
         return True
     if not (_BENIGN.match(core) or _PATHY.match(core) or _REV_DNS.match(core)):
         return False
@@ -112,6 +155,10 @@ PATTERNS = [
     (r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b", "slack token"),
     (r"(?i)\b(SG|AC|SK)[0-9a-f]{20,}\b", "vendor id/secret"),
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key block"),
+    # scheme://user:password@host — the password is short and wordlike, so no
+    # shape rule will ever see it; the STRUCTURE is what gives it away.
+    (r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/@]+:[^\s:/@]{4,}@[^\s/]+",
+     "credentials in a connection URL"),
     # a credential carried in a URL query parameter
     (r"(?i)[?&](access_token|api_key|apikey|token|key|password|sig|signature)"
      r"=[A-Za-z0-9._~+/%-]{8,}", "token in a URL"),
@@ -172,7 +219,8 @@ def shape_hits(text, min_len=20, min_entropy=3.0):
             continue
         # a path that hides a credential: flag the segment, not the whole path
         hidden = _hidden_secret_segment(core) if (
-            _BENIGN.match(core) or _PATHY.match(core)) else None
+            _BENIGN.match(core) or _PATHY.match(core)
+            or _REV_DNS.match(core)) else None
         if hidden:
             hits.append((hidden, "credential inside a path"))
             continue
@@ -185,6 +233,18 @@ def shape_hits(text, min_len=20, min_entropy=3.0):
                          else "long hex run"))
             continue
 
+        # A run only counts as a credential if some SINGLE piece of it is
+        # opaque. Without this, `--field-selector=status.phase=Running`,
+        # `com.example.service.AuthenticationTokenProvider` and every dated
+        # path slug scored as high-entropy runs and were painted out.
+        # Judge the PIECES, never the whole run: a separator-joined string is
+        # long and mixed-class by construction, so testing `core` itself let
+        # `--field-selector=status.phase=Running` back in through the same door
+        # the decomposition was built to close. _segments() of a run with no
+        # separator is [run], so a bare opaque token is still caught.
+        seg_floor = 14 if after_label else 20
+        if not any(_segment_is_opaque(g, seg_floor) for g in _segments(core)):
+            continue
         long_enough = len(core) >= (14 if after_label else min_len)
         mixed = _classes(core) >= (2 if after_label else 3)
         if long_enough and mixed and entropy(core) >= (
