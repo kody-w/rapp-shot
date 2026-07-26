@@ -3,7 +3,21 @@
 local M = {}
 
 local CONFIG = {
-  shot = os.getenv("HOME") .. "/Documents/Fable5/rapp-shot/shot",
+  -- Resolved at load, not hardcoded to one person's checkout. The old value was
+  -- $HOME/Documents/Fable5/rapp-shot/shot, which is dead for anyone who cloned
+  -- anywhere else — i.e. everyone but the author.
+  shot = (function()
+    local candidates = {
+      os.getenv("SHOT_CLI"),
+      os.getenv("HOME") .. "/.local/bin/shot",
+      "/opt/homebrew/bin/shot",
+      "/usr/local/bin/shot",
+    }
+    for _, c in ipairs(candidates) do
+      if c and hs.fs.attributes(c) then return c end
+    end
+    return os.getenv("HOME") .. "/.local/bin/shot"   -- what install.sh creates
+  end)(),
   -- Cmd+Shift+5 is taken by macOS; these sit next to it.
   region       = { { "cmd", "shift" }, "6" },  -- pick a region, copy it
   regionRedact = { { "cmd", "shift" }, "7" },  -- pick a region, AUTO-REDACT, copy

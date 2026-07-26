@@ -25,7 +25,10 @@ from datetime import datetime
 HOME = os.path.expanduser("~")
 ROOT = os.environ.get("SHOT_HOME", os.path.join(HOME, ".rappshot"))
 SHOTS = os.path.join(ROOT, "shots")
-BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+# realpath, not abspath: install.sh puts `shot` in ~/.local/bin as a SYMLINK, and
+# abspath does not resolve it — so BIN became ~/.local/bin/src, every Swift shim
+# was "missing", and redaction reported a clean image while doing nothing.
+BIN = os.path.join(os.path.dirname(os.path.realpath(__file__)), "src")
 OCR = os.path.join(BIN, "ocr")
 ANNOTATE = os.path.join(BIN, "annotate")
 CLIP = os.path.join(BIN, "clip")
@@ -57,9 +60,17 @@ def ensure():
         os.makedirs(d, exist_ok=True)
 
 
+class ShimMissing(RuntimeError):
+    """Raised instead of returning empty. A redaction tool that degrades quietly
+    tells you the image is clean and you ship the credential."""
+
+
 def ocr(path):
     if not os.access(OCR, os.X_OK):
-        return {}
+        raise ShimMissing(
+            f"OCR shim not found at {OCR}. Without it nothing can be detected, so "
+            f"this refuses to report a result. Run ./install.sh in the rapp-shot "
+            f"checkout to build the Swift shims.")
     p = run([OCR, path], timeout=120)
     try:
         return json.loads((p.stdout or "").strip().splitlines()[-1])
@@ -111,6 +122,7 @@ def resolve(arg):
 def cmd_doctor(a):
     ensure()
     print("RAPP Shot environment")
+    print(f"  shims    {BIN}")
     for name, path in (("OCR shim (Vision)", OCR), ("annotate shim (CoreGraphics)", ANNOTATE),
                        ("clipboard shim", CLIP), ("context shim", CTX)):
         print(f"  {'ok  ' if os.access(path, os.X_OK) else 'MISS'} {name}")
@@ -177,7 +189,11 @@ def cmd_ocr(a):
     if not src:
         print("no such shot", file=sys.stderr)
         return 1
-    d = ocr(src)
+    try:
+        d = ocr(src)
+    except ShimMissing as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
     text = d.get("text", "")
     if a.copy:
         tmp = os.path.join(ROOT, ".ocr.txt")
@@ -204,7 +220,12 @@ def cmd_redact(a):
         return 1
     ops, found = [], []
     if a.auto:
-        d = ocr(src)
+        try:
+            d = ocr(src)
+        except ShimMissing as exc:
+            # fail CLOSED: never let "no shim" look like "no secrets"
+            print(f"REFUSING to report on redaction: {exc}", file=sys.stderr)
+            return 3
         pats = load_patterns()
         for b in d.get("boxes", []):
             for rx, label in pats:
