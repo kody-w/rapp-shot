@@ -6,12 +6,21 @@
 # actual screen — deterministic, and it never puts your desktop in a test file.
 set -uo pipefail
 
+
+# Homebrew prefix differs by architecture (/opt/homebrew on Apple Silicon,
+# /usr/local on Intel). Resolve rather than hardcode, or this file is a no-op
+# on half the Macs it targets.
+brewbin() { for p in "/opt/homebrew/bin/$1" "/usr/local/bin/$1"; do
+    [ -x "$p" ] && { echo "$p"; return; }; done
+  command -v "$1" 2>/dev/null || echo "/opt/homebrew/bin/$1"; }
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHOT="$HERE/../shot"
 SRC="$HERE/../src"
 export SHOT_HOME=/tmp/shot-test
 rm -rf "$SHOT_HOME"; mkdir -p "$SHOT_HOME/shots"
 FIX="$SHOT_HOME/shots/fixture.png"
+FIX2="$SHOT_HOME/fixture2.png"
 
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$*"; pass=$((pass+1)); }
@@ -20,13 +29,24 @@ info() { printf '       %s\n' "$*"; }
 head_(){ printf '\n\033[1;36m%s\033[0m\n' "$*"; }
 
 head_ "0. Environment"
-doc=$("$SHOT" doctor 2>&1)
-for need in "OCR shim" "annotate shim" "clipboard shim" "screencapture"; do
-  echo "$doc" | grep -q "MISS.*$need" && bad "$need missing" || ok "$need"
-done
+doc=$("$SHOT" doctor 2>&1); docrc=$?
+# Assert the POSITIVE, and assert the command survived. The old form was
+#   grep -q "MISS.*$need" && bad || ok
+# which reports PASS when `shot doctor` crashes: a traceback contains no "MISS",
+# so the grep fails and the || branch calls ok. A suite that goes green on a
+# total crash is worse than no suite.
+if [ "$docrc" != 0 ]; then
+  bad "shot doctor exited $docrc — every check below is meaningless: $doc"
+else
+  for need in "OCR shim" "annotate shim" "clipboard shim" "screencapture"; do
+    if echo "$doc" | grep -q "^  ok   $need"; then ok "$need"
+    elif echo "$doc" | grep -q "$need"; then bad "$need present but not ok"
+    else bad "$need absent from doctor output entirely"; fi
+  done
+fi
 
 head_ "1. Fixture — render text, then read it back"
-/opt/homebrew/bin/ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=white:s=1400x520 \
+$(brewbin ffmpeg) -hide_banner -loglevel error -f lavfi -i color=c=white:s=1400x520 \
   -frames:v 1 -y "$SHOT_HOME/blank.png"
 python3 - <<PY
 import json,subprocess,sys
@@ -66,6 +86,71 @@ done
 echo "$dry" | grep -q "normal line that must survive" && bad "would redact a harmless line" \
   || ok "leaves the harmless line alone"
 
+head_ "2b. The formats that got through review twice"
+
+# WHY A SECOND FIXTURE. Section 2 only ever contained gh*_, AK*IA, sk-* and a
+# test card — four prefix-anchored patterns. That suite was green while the
+# detector missed every hex credential and every SCREAMING_SNAKE env var,
+# because none of those shapes were representable in it. A suite that CANNOT
+# fail on a defect is not evidence about that defect. These are the exact
+# formats an adversarial review proved survived `redact --auto` with rc=0 and
+# "nothing matched - image unchanged", which reads as an all-clear.
+$(brewbin ffmpeg) -hide_banner -loglevel error -f lavfi -i color=c=white:s=1400x520 \
+  -frames:v 1 -y "$SHOT_HOME/blank2.png" 2>/dev/null
+python3 - <<FIXTURE2
+import json, subprocess, sys
+# fake, and assembled from fragments so the repo never carries a secret-shaped
+# literal - same reasoning as the fixture above
+hex32 = "0123456789abcdef" * 2
+hexup = "FEDCBA9876543210" * 2
+lines = ["Second fixture: shapes with no distinctive prefix",
+         "TWILIO_AUTH_" + "TOKEN=" + hex32,
+         "key: " + hex32,
+         "https://api.example.com/v1/t?access_" + "token=" + hex32,
+         hexup,
+         "run id 3f2504e0-4f89-11d3-9a0c-0305e82c3301 is not a secret",
+         "/Users/someone/Library/Application Support/Ex/cache is not either"]
+ops = [{"op": "text", "x": 40, "y": 30 + i * 66, "t": t, "size": 26,
+        "color": "#111111"} for i, t in enumerate(lines)]
+json.dump({"in": "$SHOT_HOME/blank2.png", "out": "$FIX2", "ops": ops},
+          open("$SHOT_HOME/mk2.json", "w"))
+r = subprocess.run(["$SRC/annotate", "$SHOT_HOME/mk2.json"],
+                   capture_output=True, text=True)
+sys.exit(0 if r.returncode == 0 else 1)
+FIXTURE2
+[ -f "$FIX2" ] && ok "second fixture rendered" || bad "could not render second fixture"
+
+dry2=$("$SHOT" redact "$FIX2" --auto --dry-run 2>&1)
+if echo "$dry2" | grep -qi "nothing matched"; then
+  bad "REGRESSION: reports 'nothing matched' on an image full of credentials"
+else
+  ok "does not report an all-clear on a credential-bearing image"
+fi
+for want in "TWILIO" "access_" "FEDCBA"; do
+  if echo "$dry2" | grep -qi "$want"; then ok "flags the line carrying $want"
+  else bad "MISSED the line carrying $want"; fi
+done
+if echo "$dry2" | grep -q "0123456789abcdef0123"; then ok "flags the bare hex value"
+else bad "MISSED the bare hex credential value"; fi
+if echo "$dry2" | grep -q "3f2504e0-4f89-11d3"; then bad "flagged a canonical UUID"
+else ok "leaves a canonical UUID alone"; fi
+if echo "$dry2" | grep -q "Application Support"; then bad "flagged an ordinary file path"
+else ok "leaves an ordinary file path alone"; fi
+
+# End to end: destroy the pixels, then re-read the image and prove it is gone.
+"$SHOT" redact "$FIX2" --auto --out "$SHOT_HOME/red2.png" >/dev/null 2>&1
+rc2=$?
+[ -f "$SHOT_HOME/red2.png" ] && ok "second fixture redacted (rc=$rc2)" \
+  || bad "no output for the second fixture"
+after2=$("$SHOT" ocr "$SHOT_HOME/red2.png" 2>/dev/null)
+leak2=0
+for s in "0123456789abcdef0123" "FEDCBA9876543210FEDC"; do
+  if echo "$after2" | grep -qi "$s"; then bad "SECRET SURVIVED redaction: ${s:0:12}"; leak2=1; fi
+done
+[ "$leak2" = "0" ] && ok "no hex credential is readable after redaction"
+if echo "$after2" | grep -qi "not a secret"; then ok "benign lines survive redaction"
+else info "benign line unreadable after redaction (over-redaction, not a leak)"; fi
+
 head_ "3. Redaction actually destroys the pixels"
 "$SHOT" redact "$FIX" --auto --out "$SHOT_HOME/red.png" >/dev/null 2>&1
 [ -f "$SHOT_HOME/red.png" ] && ok "redacted image written" || bad "no output"
@@ -78,7 +163,7 @@ done
 echo "$after" | grep -q "normal line that must survive" \
   && ok "the harmless line still reads back" || bad "redaction destroyed innocent content"
 # an opaque fill must collapse to a single value, unlike a blur
-flat=$(/opt/homebrew/bin/ffmpeg -hide_banner -loglevel error -i "$SHOT_HOME/red.png" \
+flat=$($(brewbin ffmpeg) -hide_banner -loglevel error -i "$SHOT_HOME/red.png" \
   -vf "crop=600:40:40:100,format=gray" -f rawvideo - 2>/dev/null | python3 -c "
 import sys; d=sys.stdin.buffer.read(); print(len(set(d)) if d else 999)")
 [ "${flat:-999}" -le 2 ] && ok "redacted region is a flat fill (distinct=$flat) — irreversible" \
@@ -95,8 +180,37 @@ python3 "$HERE/homoglyph_check.py" "$HERE/.."
 head_ "3c. Redaction is verified by re-reading, not asserted"
 grep -q "still_present" "$SHOT" && ok "redact re-OCRs its own output before claiming success" \
   || bad "redact claims 'painted out' without checking the pixels"
-grep -q "NOT SAFE TO SHARE" "$SHOT" && ok "reports loudly when a secret survives" \
-  || bad "no survivor path — a partial redaction would look like a success"
+
+# EXERCISE the survivor path rather than grepping for its message. Substituting
+# an annotate shim that copies the image through without painting anything
+# reproduces exactly the failure that matters: ops were "applied", the pixels
+# did not change, and the credential is still legible.
+cp "$SRC/annotate" "$SHOT_HOME/annotate.real"
+cat > "$SRC/annotate" <<'NOOP'
+#!/usr/bin/env python3
+import json, shutil, sys
+spec = json.load(open(sys.argv[1]))
+shutil.copy(spec["in"], spec["out"])          # deliberately paint nothing
+print(json.dumps({"ok": True, "ops": len(spec.get("ops", []))}))
+NOOP
+chmod +x "$SRC/annotate"
+surv_out=$("$SHOT" redact "$FIX2" --auto --out "$SHOT_HOME/surv.png" 2>"$SHOT_HOME/surv.err")
+survrc=$?
+surv_err=$(cat "$SHOT_HOME/surv.err")
+cp "$SHOT_HOME/annotate.real" "$SRC/annotate"; chmod +x "$SRC/annotate"
+
+[ "$survrc" = "4" ] && ok "a failed redaction exits 4 (got $survrc)" \
+  || bad "a failed redaction exited $survrc, not 4 — a script would treat it as success"
+echo "$surv_err" | grep -q "NOT SAFE TO SHARE" \
+  && ok "reports loudly when a secret survives" \
+  || bad "no NOT-SAFE warning — a partial redaction would look like a success"
+# R9: stdout is what gets pasted into a ticket. It must not carry the reassuring
+# half of a contradiction while stderr says the opposite.
+if echo "$surv_out" | grep -q "opaque and irreversible"; then
+  bad "stdout still claims 'opaque and irreversible' while the secret survived"
+else
+  ok "stdout does not claim irreversibility when the secret survived"
+fi
 
 head_ "4. Annotation ops render"
 "$SHOT" annotate "$FIX" --box 40,30,600,50 --arrow 900,400,700,80 \
@@ -122,8 +236,13 @@ echo "$cust" | grep -q custom && ok "custom pattern matched" || bad "custom patt
 head_ "6. Manual box redaction"
 man=$("$SHOT" redact "$FIX" --box 40,30,600,50 --out "$SHOT_HOME/man.png" 2>&1)
 echo "$man" | grep -q "1 region" && ok "manual --box redacts" || bad "manual box failed: $man"
-"$SHOT" redact "$FIX" --box bogus --out /dev/null >/dev/null 2>&1 \
-  && bad "accepted a malformed --box" || ok "rejects a malformed --box"
+# Require the SPECIFIC usage exit and the diagnostic, not merely "nonzero" —
+# an unhandled traceback is also nonzero and used to pass this as a rejection.
+mb=$("$SHOT" redact "$FIX" --box bogus --out /dev/null 2>&1); mbrc=$?
+if [ "$mbrc" = 0 ]; then bad "accepted a malformed --box"
+elif echo "$mb" | grep -q "Traceback"; then bad "crashed on malformed --box: $mb"
+elif echo "$mb" | grep -q "expected x,y,w,h"; then ok "rejects a malformed --box (rc=$mbrc)"
+else bad "rejected --box but without a usable message: $mb"; fi
 
 head_ "7. Nothing here talks to the network"
 net=$(grep -nE 'urllib|requests|http://|https://|socket|curl' "$SHOT" | grep -vE '^\s*#|"""' | wc -l | tr -d ' ')

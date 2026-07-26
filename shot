@@ -63,7 +63,16 @@ def ocr(path):
             f"OCR shim not found at {OCR}. Without it nothing can be detected, so "
             f"this refuses to report a result. Run ./install.sh in the rapp-shot "
             f"checkout to build the Swift shims.")
-    p = run([OCR, path], timeout=120)
+    try:
+        p = run([OCR, path], timeout=120)
+    except OSError as exc:
+        # A zero-length or non-Mach-O file at OCR passes the X_OK test above and
+        # then fails at exec. That surfaced as a traceback and exit 1, which is
+        # indistinguishable from an ordinary error; it must be the same
+        # "shim is broken" exit 3 as a missing shim.
+        raise ShimMissing(f"OCR shim at {OCR} could not be executed ({exc}). "
+                          f"It may be zero-length or built for another "
+                          f"architecture — re-run ./install.sh.")
     if p.returncode != 0:
         raise ShimMissing(f"OCR shim exited {p.returncode}: "
                           f"{(p.stderr or '').strip()[:200] or 'no error text'}")
@@ -73,6 +82,11 @@ def ocr(path):
         # A shim that runs but returns garbage must not read as "no secrets".
         raise ShimMissing(f"OCR shim produced unparseable output ({exc}). "
                           f"Refusing to report a result.")
+    if not isinstance(d, dict):
+        # `null`, a bare list or a bare string all parse cleanly and then blew up
+        # on the membership test below with a TypeError traceback.
+        raise ShimMissing(f"OCR shim returned {type(d).__name__}, not an object — "
+                          f"refusing to report a result.")
     if "error" in d:
         raise ShimMissing(f"OCR shim reported: {d['error']}")
     if "boxes" not in d:
@@ -273,7 +287,13 @@ def cmd_redact(a):
         print(f"WARNING: could not verify the result ({exc})", file=sys.stderr)
         survivors = None
 
-    print(f"{dst}  ({len(ops)} region(s) painted out, opaque and irreversible)")
+    # Say "opaque and irreversible" ONLY when re-reading confirmed it. Printing
+    # it above a NOT-SAFE-TO-SHARE warning is the reassuring half of a
+    # contradiction, and stdout is what gets pasted into a ticket.
+    if survivors:
+        print(f"{dst}  ({len(ops)} region(s) painted, BUT SEE THE WARNING BELOW)")
+    else:
+        print(f"{dst}  ({len(ops)} region(s) painted out, opaque and irreversible)")
     for label, t, _m in found:
         print(f"  {label:24} {t}")
     if survivors:

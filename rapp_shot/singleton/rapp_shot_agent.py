@@ -32,6 +32,7 @@ _CANDIDATES = [
     os.path.join(HOME, ".local", "bin", "shot"),
     "/opt/homebrew/bin/shot",
     "/usr/local/bin/shot",
+    "/usr/local/bin/shot",
     # Last resort only: the author's own checkout layout. Kept so a dev box works
     # without installing, but it must never be the primary path — for anyone else
     # it is simply a dead entry.

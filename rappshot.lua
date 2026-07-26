@@ -12,6 +12,7 @@ local CONFIG = {
       os.getenv("HOME") .. "/.local/bin/shot",
       "/opt/homebrew/bin/shot",
       "/usr/local/bin/shot",
+      "/usr/local/bin/shot",
     }
     for _, c in ipairs(candidates) do
       if c and hs.fs.attributes(c) then return c end

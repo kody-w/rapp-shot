@@ -57,18 +57,68 @@ _HOMOGLYPHS = {
     "５": "5", "６": "6", "７": "7", "８": "8", "９": "9",
 }
 
+# NOT \b. `\b` does not fire between `_` and a letter, so it never matched a
+# SCREAMING_SNAKE env var — TWILIO_AUTH_TOKEN, AWS_SECRET_ACCESS_KEY — which is
+# the single most common way a credential appears on a developer's screen. That
+# made the whole relaxed "labelled" branch below dead code in practice.
+# Letter-boundaries instead, so `_`, `-`, `.` and `=` all count as separators.
+_L = r"(?<![A-Za-z])"
+_R = r"(?![A-Za-z])"
 SECRET_LABEL = re.compile(
-    r"(?i)\b(api[\s_-]?key|secret|password|passwd|passphrase|token|bearer|"
-    r"credential|auth|private[\s_-]?key|access[\s_-]?key|client[\s_-]?secret)\b")
+    r"(?i)" + _L + r"(api[\s_.-]?key|secret|password|passwd|passphrase|token|"
+    r"bearer|credential|auth|key|private[\s_.-]?key|access[\s_.-]?key|"
+    r"client[\s_.-]?secret|conn(ection)?[\s_.-]?str(ing)?)" + _R)
+
+# Canonical UUID: a well-known NON-secret shape. Excluded explicitly so the
+# shape rule stops destroying run ids while missing the key beside them.
+_UUID = re.compile(
+    r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_HEXY = re.compile(r"(?i)^[0-9a-f]{24,}$")
 
 # Runs that are plainly not credentials, so shape-matching does not flag them.
+# Paths matter here beyond the leading character: a whitespace-split run can start
+# mid-path ("Support/com.example.App/cache"), so anything containing a separator
+# whose segments are all ordinary words is treated as a path, not a secret.
 _BENIGN = re.compile(
     r"(?i)^(https?://|/|~|\.{1,2}/|[a-z]+\.(com|org|net|io|dev|ai)$)")
+_PATHY = re.compile(r"^[A-Za-z0-9._~-]+(/[A-Za-z0-9._~-]+)+/?$")
+_REV_DNS = re.compile(r"^[a-z]{2,}(\.[A-Za-z0-9-]{2,}){2,}$")
+
+
+def _hidden_secret_segment(core):
+    """A credential-shaped segment inside a path or URL. `/var/run/secrets/<hex>`
+    is a path AND a leak; the path check must not short-circuit past it."""
+    for seg in re.split(r"[/.?&=]", core):
+        seg = seg.strip()
+        if len(seg) >= 24 and (_HEXY.match(seg) or entropy(seg) >= 3.4):
+            return seg
+    return None
+
+
+def _is_benign(core):
+    """True when the run is a path, URL or reverse-DNS identifier AND carries no
+    credential-shaped segment of its own."""
+    if _UUID.match(core):
+        return True
+    if not (_BENIGN.match(core) or _PATHY.match(core) or _REV_DNS.match(core)):
+        return False
+    return _hidden_secret_segment(core) is None
 
 PATTERNS = [
     (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "email"),
     (r"\bgh[pousr]_[A-Za-z0-9]{16,}\b", "github token"),
     (r"\bsk-[A-Za-z0-9-]{20,}\b", "openai-style key"),
+    (r"(?i)\b(sk|pk|rk)_(live|test)_[A-Za-z0-9]{10,}\b", "stripe-style key"),
+    (r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b", "slack token"),
+    (r"(?i)\b(SG|AC|SK)[0-9a-f]{20,}\b", "vendor id/secret"),
+    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key block"),
+    # a credential carried in a URL query parameter
+    (r"(?i)[?&](access_token|api_key|apikey|token|key|password|sig|signature)"
+     r"=[A-Za-z0-9._~+/%-]{8,}", "token in a URL"),
+    # LABEL = <long opaque value>, including SCREAMING_SNAKE env-var form
+    (r"(?i)(?<![A-Za-z])(api[\s_.-]?key|secret|password|passwd|token|bearer|"
+     r"credential|auth[\s_.-]?token|access[\s_.-]?key|key)(?![A-Za-z])"
+     r"\s*[:=]\s*[\"\']?([A-Za-z0-9._~+/=-]{12,})", "labelled credential value"),
     (r"\bAKIA[0-9A-Z]{16}\b", "aws access key"),
     (r"\bey[JA-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.", "jwt"),
     (r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]{16,}", "bearer token"),
@@ -107,16 +157,34 @@ def _classes(s):
 
 
 def shape_hits(text, min_len=20, min_entropy=3.0):
-    """Credential-SHAPED runs, independent of charset. Catches a mangled key that
-    every anchored pattern misses."""
+    """Credential-SHAPED runs, independent of charset.
+
+    The class floor used to be 3 unconditionally, which STRUCTURALLY excluded
+    hex: a hex token is lower+digit or upper+digit, never three classes. Every
+    32- and 40-character hex API key, Twilio auth token and HMAC secret was
+    therefore invisible. Hex of respectable length is now its own case.
+    """
     hits = []
     labelled = bool(SECRET_LABEL.search(text))
     for run in re.findall(r"[^\s'\"`,;()\[\]{}<>]{12,}", text):
         core = run.strip(".,:;=")
-        if len(core) < 12 or _BENIGN.match(core):
+        if len(core) < 12 or _is_benign(core):
             continue
-        after_label = labelled and SECRET_LABEL.search(
-            text[:text.find(run)] or "") is not None
+        # a path that hides a credential: flag the segment, not the whole path
+        hidden = _hidden_secret_segment(core) if (
+            _BENIGN.match(core) or _PATHY.match(core)) else None
+        if hidden:
+            hits.append((hidden, "credential inside a path"))
+            continue
+        before = text[:text.find(run)]
+        after_label = labelled and SECRET_LABEL.search(before) is not None
+
+        # long hex is a credential shape in its own right, labelled or not
+        if _HEXY.match(core) and len(core) >= (24 if after_label else 32):
+            hits.append((core, "hex credential" if after_label
+                         else "long hex run"))
+            continue
+
         long_enough = len(core) >= (14 if after_label else min_len)
         mixed = _classes(core) >= (2 if after_label else 3)
         if long_enough and mixed and entropy(core) >= (
