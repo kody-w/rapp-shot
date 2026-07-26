@@ -84,6 +84,20 @@ import sys; d=sys.stdin.buffer.read(); print(len(set(d)) if d else 999)")
 [ "${flat:-999}" -le 2 ] && ok "redacted region is a flat fill (distinct=$flat) — irreversible" \
   || bad "redacted region still has $flat distinct values — reversible!"
 
+head_ "3b. Homoglyph-mangled secrets (the class that shipped a legible token)"
+# The old fixture passed BY LUCK: Vision corrupted it at character 17, one past
+# the {16,} threshold. These assert on detect.py directly with the exact
+# substitutions Vision was observed to make, so the threshold cannot hide it.
+python3 "$HERE/homoglyph_check.py" "$HERE/.."
+[ $? -eq 0 ] && ok "homoglyph-mangled secrets are detected, prose is not" \
+  || bad "a mangled secret slipped through — this is the shipping-a-token bug"
+
+head_ "3c. Redaction is verified by re-reading, not asserted"
+grep -q "still_present" "$SHOT" && ok "redact re-OCRs its own output before claiming success" \
+  || bad "redact claims 'painted out' without checking the pixels"
+grep -q "NOT SAFE TO SHARE" "$SHOT" && ok "reports loudly when a secret survives" \
+  || bad "no survivor path — a partial redaction would look like a success"
+
 head_ "4. Annotation ops render"
 "$SHOT" annotate "$FIX" --box 40,30,600,50 --arrow 900,400,700,80 \
   --highlight 40,200,500,40 --text 60,450,"annotated" \

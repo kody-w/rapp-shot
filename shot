@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import sys as _sys
 import shutil
 import subprocess
 import sys
@@ -35,22 +36,13 @@ CLIP = os.path.join(BIN, "clip")
 CTX = os.path.join(BIN, "context")
 PATTERNS_FILE = os.path.join(ROOT, "redact-patterns.txt")
 
-# Anything matching these is painted out by `redact --auto`. Deliberately
-# conservative on the generic ones: a false redaction costs a re-shot, a missed
-# credential costs a rotation.
-DEFAULT_PATTERNS = [
-    (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "email"),
-    (r"\bgh[pousr]_[A-Za-z0-9]{16,}\b", "github token"),
-    (r"\bsk-[A-Za-z0-9]{20,}\b", "openai-style key"),
-    (r"\bAKIA[0-9A-Z]{16}\b", "aws access key"),
-    (r"\bey[JA-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.", "jwt"),
-    (r"\bBearer\s+[A-Za-z0-9._~+/-]{16,}", "bearer token"),
-    (r"(?i)\b(api[_-]?key|secret|password|passwd|token)\b\s*[:=]\s*\S{6,}", "labelled secret"),
-    (r"\b(?:\d[ -]*?){13,16}\b", "card-like number"),
-    (r"\b\d{3}-\d{2}-\d{4}\b", "ssn-like"),
-]
+# Detection lives next to this script so the logic is testable on its own.
+_sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import detect  # noqa: E402
 
-
+# The pattern list now lives in detect.py, together with homoglyph normalisation
+# and shape matching. See that module for why anchored regexes alone are unsafe
+# against OCR output.
 def run(args, **kw):
     return subprocess.run(args, capture_output=True, text=True, **kw)
 
@@ -72,14 +64,25 @@ def ocr(path):
             f"this refuses to report a result. Run ./install.sh in the rapp-shot "
             f"checkout to build the Swift shims.")
     p = run([OCR, path], timeout=120)
+    if p.returncode != 0:
+        raise ShimMissing(f"OCR shim exited {p.returncode}: "
+                          f"{(p.stderr or '').strip()[:200] or 'no error text'}")
     try:
-        return json.loads((p.stdout or "").strip().splitlines()[-1])
-    except Exception:
-        return {}
+        d = json.loads((p.stdout or "").strip().splitlines()[-1])
+    except Exception as exc:
+        # A shim that runs but returns garbage must not read as "no secrets".
+        raise ShimMissing(f"OCR shim produced unparseable output ({exc}). "
+                          f"Refusing to report a result.")
+    if "error" in d:
+        raise ShimMissing(f"OCR shim reported: {d['error']}")
+    if "boxes" not in d:
+        raise ShimMissing("OCR shim returned no boxes field — refusing to report.")
+    return d
 
 
 def load_patterns():
-    pats = list(DEFAULT_PATTERNS)
+    """Only the user's extra regexes; the built-ins live in detect.PATTERNS."""
+    pats = []
     if os.path.exists(PATTERNS_FILE):
         for line in open(PATTERNS_FILE, encoding="utf-8", errors="replace"):
             t = line.strip()
@@ -135,8 +138,8 @@ def cmd_doctor(a):
     if ok:
         os.remove(probe)
     pats = load_patterns()
-    print(f"  ok   {len(pats)} redaction patterns "
-          f"({len(pats) - len(DEFAULT_PATTERNS)} custom)")
+    print(f"  ok   {len(detect.PATTERNS)} built-in patterns + {len(pats)} custom, "
+          f"plus homoglyph-normalised shape matching")
     n = len([f for f in os.listdir(SHOTS)]) if os.path.isdir(SHOTS) else 0
     print(f"  ok   {n} shot(s) in {SHOTS}")
     print("\nNothing here uploads. Capture, OCR and annotation are all on-device.")
@@ -223,27 +226,23 @@ def cmd_redact(a):
         try:
             d = ocr(src)
         except ShimMissing as exc:
-            # fail CLOSED: never let "no shim" look like "no secrets"
             print(f"REFUSING to report on redaction: {exc}", file=sys.stderr)
             return 3
-        pats = load_patterns()
+        extra = load_patterns()
         for b in d.get("boxes", []):
-            for rx, label in pats:
-                try:
-                    if re.search(rx, b["t"]):
-                        pad = 3
-                        ops.append({"op": "redact", "x": max(0, b["x"] - pad),
-                                    "y": max(0, b["y"] - pad),
-                                    "w": b["w"] + pad * 2, "h": b["h"] + pad * 2})
-                        found.append((label, b["t"][:48]))
-                        break
-                except re.error:
-                    continue
+            for matched, label in detect.find(b["t"], extra):
+                pad = 3
+                ops.append({"op": "redact", "x": max(0, b["x"] - pad),
+                            "y": max(0, b["y"] - pad),
+                            "w": b["w"] + pad * 2, "h": b["h"] + pad * 2})
+                found.append((label, b["t"][:60], matched))
+                break
+
     for spec in (a.box or []):
         try:
             x, y, w, h = (int(v) for v in spec.split(","))
             ops.append({"op": "redact", "x": x, "y": y, "w": w, "h": h})
-            found.append(("manual", f"{x},{y} {w}x{h}"))
+            found.append(("manual", f"{x},{y} {w}x{h}", ""))
         except Exception:
             print(f"bad --box {spec!r}, expected x,y,w,h", file=sys.stderr)
             return 2
@@ -252,17 +251,40 @@ def cmd_redact(a):
         return 0
     if a.dry_run:
         print(f"would redact {len(ops)} region(s):")
-        for label, t in found:
-            print(f"  {label:16} {t}")
+        for label, t, _m in found:
+            print(f"  {label:24} {t}")
         return 0
     dst = a.out or (os.path.splitext(src)[0] + ".redacted.png")
     res, err = apply_ops(src, dst, ops)
     if err:
         print(err, file=sys.stderr)
         return 1
+    # VERIFY BY RE-READING. "painted out" is a claim about pixels, so prove it
+    # against the pixels rather than against the intent. Without this the tool
+    # can report success while a mangled credential is still legible.
+    survivors = []
+    try:
+        after = ocr(dst).get("text", "")
+        for label, line, matched in found:
+            probe = matched or line
+            if probe and detect.still_present(probe, after):
+                survivors.append((label, probe[:48]))
+    except ShimMissing as exc:
+        print(f"WARNING: could not verify the result ({exc})", file=sys.stderr)
+        survivors = None
+
     print(f"{dst}  ({len(ops)} region(s) painted out, opaque and irreversible)")
-    for label, t in found:
-        print(f"  {label:16} {t}")
+    for label, t, _m in found:
+        print(f"  {label:24} {t}")
+    if survivors:
+        print(f"\nNOT SAFE TO SHARE — {len(survivors)} detected secret(s) are STILL "
+              f"readable after redaction:", file=sys.stderr)
+        for label, t in survivors:
+            print(f"  {label:24} {t}", file=sys.stderr)
+        print("Re-run with --box to cover them manually.", file=sys.stderr)
+        return 4
+    if survivors is not None:
+        print("  verified: re-reading the output finds none of them")
     if a.copy:
         run([CLIP, "image", dst], timeout=30)
         print("  copied to clipboard")

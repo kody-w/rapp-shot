@@ -28,6 +28,40 @@ would redact 5 region(s):
 Re-reading the redacted image returns only the harmless lines. The secrets are
 gone from the image, not covered up.
 
+### Why anchored regexes were not enough
+
+The first detector matched patterns like `\bgh[pousr]_[A-Za-z0-9]{16,}\b` straight
+against OCR output. That fails on exactly the strings it most needs to catch —
+Vision substitutes homoglyphs inside high-entropy runs, because random characters
+give its language model no context to correct against:
+
+```
+rendered   GITHUB_TOKEN=gh•_9zQ7LmN4bV2cD8fH1jK3pR5sT6uW…
+Vision     GITHUB_ТOКЕN=gh•_9zQ7LmN4bV2cD8fH1jKЗpR5sT6uW…
+                 ^^^                          ^ Cyrillic ZE (U+0417)
+                 Cyrillic Т К Е
+```
+
+`[A-Za-z0-9]` breaks there, the token is missed, and the tool then reports
+*"2 region(s) painted out, opaque and irreversible"* — which reads as an all-clear
+and invites you to share an image with a live token in it. That is worse than
+finding nothing, because it manufactures confidence.
+
+Detection now normalises homoglyphs to ASCII first, and additionally matches on
+**shape** — a long, mixed-class, space-free run is a credential whether or not it
+survived OCR intact, doubly so after a `token`/`key`/`secret` label.
+
+### It verifies by re-reading, not by asserting
+
+After painting, the output is OCR'd again and every detected secret is searched
+for in the result. If any survives, you get a non-zero exit and:
+
+```
+NOT SAFE TO SHARE — 1 detected secret(s) are STILL readable after redaction
+```
+
+"Painted out" is a claim about pixels, so it is checked against the pixels.
+
 ### Redaction is opaque, and that is not a style choice
 
 `redact` paints a solid rectangle. Blur and pixelation are reversible often
