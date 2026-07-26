@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""RAPP Shot — capture, annotate, read and redact screenshots, entirely on-device.
+
+Everything runs locally: capture is macOS `screencapture`, text recognition is
+Apple's Vision framework, annotation is CoreGraphics. Nothing is uploaded, and
+there is no account, no link, and no retention policy — a shot is a PNG in
+~/.rappshot/ and nowhere else.
+
+The reason to have this rather than the paid one: `shot redact --auto` finds
+secrets in the image with OCR and paints them out BEFORE the screenshot ever
+leaves your machine. Redaction is an opaque fill, not a blur — blur and
+pixelation are reversible often enough to have leaked real credentials.
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+HOME = os.path.expanduser("~")
+ROOT = os.environ.get("SHOT_HOME", os.path.join(HOME, ".rappshot"))
+SHOTS = os.path.join(ROOT, "shots")
+BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+OCR = os.path.join(BIN, "ocr")
+ANNOTATE = os.path.join(BIN, "annotate")
+CLIP = os.path.join(BIN, "clip")
+CTX = os.path.join(BIN, "context")
+PATTERNS_FILE = os.path.join(ROOT, "redact-patterns.txt")
+
+# Anything matching these is painted out by `redact --auto`. Deliberately
+# conservative on the generic ones: a false redaction costs a re-shot, a missed
+# credential costs a rotation.
+DEFAULT_PATTERNS = [
+    (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "email"),
+    (r"\bgh[pousr]_[A-Za-z0-9]{16,}\b", "github token"),
+    (r"\bsk-[A-Za-z0-9]{20,}\b", "openai-style key"),
+    (r"\bAKIA[0-9A-Z]{16}\b", "aws access key"),
+    (r"\bey[JA-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.", "jwt"),
+    (r"\bBearer\s+[A-Za-z0-9._~+/-]{16,}", "bearer token"),
+    (r"(?i)\b(api[_-]?key|secret|password|passwd|token)\b\s*[:=]\s*\S{6,}", "labelled secret"),
+    (r"\b(?:\d[ -]*?){13,16}\b", "card-like number"),
+    (r"\b\d{3}-\d{2}-\d{4}\b", "ssn-like"),
+]
+
+
+def run(args, **kw):
+    return subprocess.run(args, capture_output=True, text=True, **kw)
+
+
+def ensure():
+    for d in (ROOT, SHOTS):
+        os.makedirs(d, exist_ok=True)
+
+
+def ocr(path):
+    if not os.access(OCR, os.X_OK):
+        return {}
+    p = run([OCR, path], timeout=120)
+    try:
+        return json.loads((p.stdout or "").strip().splitlines()[-1])
+    except Exception:
+        return {}
+
+
+def load_patterns():
+    pats = list(DEFAULT_PATTERNS)
+    if os.path.exists(PATTERNS_FILE):
+        for line in open(PATTERNS_FILE, encoding="utf-8", errors="replace"):
+            t = line.strip()
+            if t and not t.startswith("#"):
+                pats.append((t, "custom"))
+    return pats
+
+
+def apply_ops(src, dst, ops):
+    spec = os.path.join(ROOT, ".spec.json")
+    with open(spec, "w") as fh:
+        json.dump({"in": src, "out": dst, "ops": ops}, fh)
+    p = run([ANNOTATE, spec], timeout=120)
+    os.remove(spec)
+    if p.returncode != 0 or not os.path.exists(dst):
+        return None, (p.stderr or "annotate failed").strip()
+    try:
+        return json.loads(p.stdout.strip()), None
+    except Exception:
+        return {"out": dst}, None
+
+
+def newest():
+    files = [os.path.join(SHOTS, f) for f in os.listdir(SHOTS)] if os.path.isdir(SHOTS) else []
+    files = [f for f in files if f.endswith(".png")]
+    return max(files, key=os.path.getmtime) if files else None
+
+
+def resolve(arg):
+    """Accept a path, a shot name, or nothing (meaning the most recent shot)."""
+    if not arg:
+        return newest()
+    if os.path.exists(arg):
+        return arg
+    cand = os.path.join(SHOTS, arg if arg.endswith(".png") else arg + ".png")
+    return cand if os.path.exists(cand) else None
+
+
+# ------------------------------------------------------------------ commands
+def cmd_doctor(a):
+    ensure()
+    print("RAPP Shot environment")
+    for name, path in (("OCR shim (Vision)", OCR), ("annotate shim (CoreGraphics)", ANNOTATE),
+                       ("clipboard shim", CLIP), ("context shim", CTX)):
+        print(f"  {'ok  ' if os.access(path, os.X_OK) else 'MISS'} {name}")
+    print(f"  {'ok  ' if shutil.which('screencapture') else 'MISS'} screencapture")
+    probe = os.path.join(ROOT, "probe.png")
+    run(["screencapture", "-x", "-t", "png", probe], timeout=30)
+    ok = os.path.exists(probe)
+    print(f"  {'ok  ' if ok else 'MISS'} screen capture works"
+          f"{'' if ok else ' — grant Screen Recording to your terminal'}")
+    if ok:
+        os.remove(probe)
+    pats = load_patterns()
+    print(f"  ok   {len(pats)} redaction patterns "
+          f"({len(pats) - len(DEFAULT_PATTERNS)} custom)")
+    n = len([f for f in os.listdir(SHOTS)]) if os.path.isdir(SHOTS) else 0
+    print(f"  ok   {n} shot(s) in {SHOTS}")
+    print("\nNothing here uploads. Capture, OCR and annotation are all on-device.")
+    return 0
+
+
+def cmd_capture(a):
+    ensure()
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", a.name).strip("-") if a.name else ""
+    dst = os.path.join(SHOTS, f"{stamp}{'_' + slug if slug else ''}.png")
+    args = ["screencapture", "-t", "png"]
+    if a.mode == "region":
+        args.append("-i")                      # interactive crosshair
+    elif a.mode == "window":
+        args += ["-i", "-W"]
+    else:
+        args.append("-x")                      # silent fullscreen
+    if a.delay:
+        args += ["-T", str(a.delay)]
+    args.append(dst)
+    run(args, timeout=300)
+    if not os.path.exists(dst):
+        print("no capture (cancelled, or Screen Recording not granted)", file=sys.stderr)
+        return 1
+    size = os.path.getsize(dst)
+    ctx = {}
+    if os.access(CTX, os.X_OK):
+        try:
+            ctx = json.loads(run([CTX], timeout=15).stdout or "{}")
+        except Exception:
+            ctx = {}
+    meta = {"file": dst, "bytes": size, "app": ctx.get("app"), "title": ctx.get("title"),
+            "ts": time.time()}
+    with open(dst + ".json", "w") as fh:
+        json.dump(meta, fh, indent=2)
+    print(f"{dst}  ({size // 1024} KB{', ' + ctx['app'] if ctx.get('app') else ''})")
+    if a.auto_redact:
+        a2 = argparse.Namespace(image=dst, auto=True, out=None, copy=a.copy, quiet=False,
+                                box=[], dry_run=False)
+        return cmd_redact(a2)
+    if a.copy:
+        run([CLIP, "image", dst], timeout=30)
+        print("  copied to clipboard")
+    return 0
+
+
+def cmd_ocr(a):
+    src = resolve(a.image)
+    if not src:
+        print("no such shot", file=sys.stderr)
+        return 1
+    d = ocr(src)
+    text = d.get("text", "")
+    if a.copy:
+        tmp = os.path.join(ROOT, ".ocr.txt")
+        with open(tmp, "w") as fh:
+            fh.write(text)
+        run([CLIP, "text", tmp], timeout=30)
+        os.remove(tmp)
+    if a.json:
+        print(json.dumps(d, indent=2))
+    else:
+        print(text)
+        if a.copy:
+            print(f"\n  ({d.get('lines', 0)} lines copied to clipboard)", file=sys.stderr)
+    return 0
+
+
+def cmd_redact(a):
+    """OCR the image, match every line against the secret patterns, paint the
+    matches out opaquely. This is the whole point of the tool: it happens before
+    the screenshot is shared, not after someone notices."""
+    src = resolve(a.image)
+    if not src:
+        print("no such shot", file=sys.stderr)
+        return 1
+    ops, found = [], []
+    if a.auto:
+        d = ocr(src)
+        pats = load_patterns()
+        for b in d.get("boxes", []):
+            for rx, label in pats:
+                try:
+                    if re.search(rx, b["t"]):
+                        pad = 3
+                        ops.append({"op": "redact", "x": max(0, b["x"] - pad),
+                                    "y": max(0, b["y"] - pad),
+                                    "w": b["w"] + pad * 2, "h": b["h"] + pad * 2})
+                        found.append((label, b["t"][:48]))
+                        break
+                except re.error:
+                    continue
+    for spec in (a.box or []):
+        try:
+            x, y, w, h = (int(v) for v in spec.split(","))
+            ops.append({"op": "redact", "x": x, "y": y, "w": w, "h": h})
+            found.append(("manual", f"{x},{y} {w}x{h}"))
+        except Exception:
+            print(f"bad --box {spec!r}, expected x,y,w,h", file=sys.stderr)
+            return 2
+    if not ops:
+        print("nothing matched — image unchanged")
+        return 0
+    if a.dry_run:
+        print(f"would redact {len(ops)} region(s):")
+        for label, t in found:
+            print(f"  {label:16} {t}")
+        return 0
+    dst = a.out or (os.path.splitext(src)[0] + ".redacted.png")
+    res, err = apply_ops(src, dst, ops)
+    if err:
+        print(err, file=sys.stderr)
+        return 1
+    print(f"{dst}  ({len(ops)} region(s) painted out, opaque and irreversible)")
+    for label, t in found:
+        print(f"  {label:16} {t}")
+    if a.copy:
+        run([CLIP, "image", dst], timeout=30)
+        print("  copied to clipboard")
+    return 0
+
+
+def cmd_annotate(a):
+    src = resolve(a.image)
+    if not src:
+        print("no such shot", file=sys.stderr)
+        return 1
+    ops = []
+    for spec in (a.crop or [])[:1]:
+        x, y, w, h = (int(v) for v in spec.split(","))
+        ops.append({"op": "crop", "x": x, "y": y, "w": w, "h": h})
+    for kind in ("box", "highlight", "pixelate"):
+        for spec in (getattr(a, kind) or []):
+            x, y, w, h = (int(v) for v in spec.split(","))
+            op = {"op": kind, "x": x, "y": y, "w": w, "h": h}
+            if a.color:
+                op["color"] = a.color
+            ops.append(op)
+    for spec in (a.arrow or []):
+        x1, y1, x2, y2 = (int(v) for v in spec.split(","))
+        op = {"op": "arrow", "x1": x1, "y1": y1, "x2": x2, "y2": y2}
+        if a.color:
+            op["color"] = a.color
+        ops.append(op)
+    for spec in (a.text or []):
+        parts = spec.split(",", 2)
+        if len(parts) != 3:
+            print(f"bad --text {spec!r}, expected x,y,message", file=sys.stderr)
+            return 2
+        ops.append({"op": "text", "x": int(parts[0]), "y": int(parts[1]),
+                    "t": parts[2], "size": a.size, "bg": "#000000cc"})
+    if not ops:
+        print("no annotations given", file=sys.stderr)
+        return 2
+    dst = a.out or (os.path.splitext(src)[0] + ".annotated.png")
+    res, err = apply_ops(src, dst, ops)
+    if err:
+        print(err, file=sys.stderr)
+        return 1
+    print(f"{dst}  ({res.get('width')}x{res.get('height')}, {len(ops)} op(s))")
+    if a.copy:
+        run([CLIP, "image", dst], timeout=30)
+        print("  copied to clipboard")
+    return 0
+
+
+def cmd_copy(a):
+    src = resolve(a.image)
+    if not src:
+        print("no such shot", file=sys.stderr)
+        return 1
+    run([CLIP, "image", src], timeout=30)
+    print(f"copied {src}")
+    return 0
+
+
+def cmd_list(a):
+    ensure()
+    files = sorted((f for f in os.listdir(SHOTS) if f.endswith(".png")), reverse=True)
+    if not files:
+        print("no shots yet — try: shot capture")
+        return 0
+    for f in files[:a.limit]:
+        p = os.path.join(SHOTS, f)
+        meta = {}
+        if os.path.exists(p + ".json"):
+            try:
+                meta = json.load(open(p + ".json"))
+            except Exception:
+                pass
+        print(f"  {f:44} {os.path.getsize(p)//1024:>5} KB  {meta.get('app') or ''}")
+    print(f"\n{len(files)} shot(s) in {SHOTS}")
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(prog="shot", description=__doc__.split("\n")[0])
+    sub = p.add_subparsers(dest="cmd")
+
+    sub.add_parser("doctor", help="environment check").set_defaults(fn=cmd_doctor)
+
+    s = sub.add_parser("capture", help="take a screenshot")
+    s.add_argument("--mode", choices=["region", "window", "screen"], default="region")
+    s.add_argument("--name")
+    s.add_argument("--delay", type=int, default=0)
+    s.add_argument("--copy", action="store_true")
+    s.add_argument("--auto-redact", action="store_true",
+                   help="OCR and paint out secrets immediately")
+    s.set_defaults(fn=cmd_capture)
+
+    s = sub.add_parser("ocr", help="read the text out of a shot")
+    s.add_argument("image", nargs="?")
+    s.add_argument("--copy", action="store_true")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_ocr)
+
+    s = sub.add_parser("redact", help="paint out secrets, opaquely")
+    s.add_argument("image", nargs="?")
+    s.add_argument("--auto", action="store_true", help="find secrets by OCR + patterns")
+    s.add_argument("--box", action="append", metavar="x,y,w,h")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--out")
+    s.add_argument("--copy", action="store_true")
+    s.set_defaults(fn=cmd_redact)
+
+    s = sub.add_parser("annotate", help="box / arrow / text / highlight / pixelate / crop")
+    s.add_argument("image", nargs="?")
+    s.add_argument("--box", action="append", metavar="x,y,w,h")
+    s.add_argument("--highlight", action="append", metavar="x,y,w,h")
+    s.add_argument("--pixelate", action="append", metavar="x,y,w,h")
+    s.add_argument("--crop", action="append", metavar="x,y,w,h")
+    s.add_argument("--arrow", action="append", metavar="x1,y1,x2,y2")
+    s.add_argument("--text", action="append", metavar="x,y,message")
+    s.add_argument("--color")
+    s.add_argument("--size", type=int, default=28)
+    s.add_argument("--out")
+    s.add_argument("--copy", action="store_true")
+    s.set_defaults(fn=cmd_annotate)
+
+    s = sub.add_parser("copy", help="put a shot on the clipboard")
+    s.add_argument("image", nargs="?")
+    s.set_defaults(fn=cmd_copy)
+
+    s = sub.add_parser("list", help="shots on disk")
+    s.add_argument("--limit", type=int, default=20)
+    s.set_defaults(fn=cmd_list)
+
+    a = p.parse_args()
+    if not getattr(a, "fn", None):
+        p.print_help()
+        return 0
+    ensure()
+    return a.fn(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
