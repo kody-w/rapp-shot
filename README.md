@@ -9,11 +9,21 @@ There is no account, upload, share link, or cloud processing. The original
 
 ## Native app — macOS 14 or later
 
-For a packaged build, move **RAPPShot.app** to `/Applications` and open it.
+Download **[RAPP Shot v1.3.0](https://github.com/kody-w/rapp-shot/releases/tag/v1.3.0)**:
+
+- [Apple Silicon (arm64 ZIP)](https://github.com/kody-w/rapp-shot/releases/download/v1.3.0/rapp_shot-1.3.0-arm64.zip)
+- [Intel (x86_64 ZIP)](https://github.com/kody-w/rapp-shot/releases/download/v1.3.0/rapp_shot-1.3.0-x86_64.zip)
+
+In Finder, double-click the ZIP, move **RAPPShot.app** to `/Applications` (or
+`~/Applications`), then open the app normally. No terminal installer is required.
 The app's display name is **RAPP Shot**, bundle identifier `io.rapp.shot`.
 End users need **no compiler, Python, Homebrew, Hammerspoon, or helper server**.
-An unsigned developer build is not a signed or notarized public release;
-distribution signing/notarization is a separate release step.
+The released apps are Developer ID signed, notarized and stapled. Architecture-
+specific publisher reports are attached to the release; exact archive and
+content-addressed report hashes are recorded in `rapp_shot/manifest.json`.
+These are publisher release reports, not independent Apple authentication or
+RAPP/1 acceptance by a catalog. Do not disable Gatekeeper or reset TCC to install.
+An unsigned local developer build is not equivalent to the released build.
 
 1. Nothing is captured at startup. **Open Image** works without screen permission.
 2. For capture, click **Enable Screen Recording** and grant it to **RAPP Shot**,
