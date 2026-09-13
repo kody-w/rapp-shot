@@ -307,18 +307,21 @@ def cmd_redact(a):
     # against the pixels rather than against the intent. Without this the tool
     # can report success while a mangled credential is still legible.
     survivors = []
-    try:
-        after = ocr(dst).get("text", "")
-        for label, line, matched in found:
-            probe = matched or line
-            if probe and detect.still_present(probe, after):
-                # Mask here too. stdout was masked and this was not — and this
-                # is the path that fires when redaction FAILED, i.e. the one
-                # most likely to be pasted into a bug report.
-                survivors.append((label, _mask(probe)))
-    except ShimMissing as exc:
-        print(f"WARNING: could not verify the result ({exc})", file=sys.stderr)
-        survivors = None
+    if a.auto:
+        try:
+            after = ocr(dst).get("text", "")
+            for label, line, matched in found:
+                probe = matched or line
+                if probe and detect.still_present(probe, after):
+                    # Mask here too. stdout was masked and this was not — and this
+                    # is the path that fires when redaction FAILED, i.e. the one
+                    # most likely to be pasted into a bug report.
+                    survivors.append((label, _mask(probe)))
+        except ShimMissing as exc:
+            print(f"{dst}  ({len(ops)} region(s) painted, UNVERIFIED — do not share)", file=sys.stderr)
+            print(f"NOT SAFE TO SHARE — could not re-read the rendered output ({exc}).", file=sys.stderr)
+            print("The rendered file was kept for manual review; it was not copied.", file=sys.stderr)
+            return 5
 
     # Say "opaque and irreversible" ONLY when re-reading confirmed it. Printing
     # it above a NOT-SAFE-TO-SHARE warning is the reassuring half of a
@@ -336,8 +339,7 @@ def cmd_redact(a):
             print(f"  {label:24} {t}", file=sys.stderr)
         print("Re-run with --box to cover them manually.", file=sys.stderr)
         return 4
-    if survivors is not None:
-        print("  verified: re-reading the output finds none of them")
+    print("  verified: re-reading the output finds none of them")
     if a.copy:
         run([CLIP, "image", dst], timeout=30)
         print("  copied to clipboard")
