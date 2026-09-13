@@ -7,18 +7,29 @@
 set -uo pipefail
 
 
-# Homebrew prefix differs by architecture (/opt/homebrew on Apple Silicon,
-# /usr/local on Intel). Resolve rather than hardcode, or this file is a no-op
-# on half the Macs it targets.
-brewbin() { for p in "/opt/homebrew/bin/$1" "/usr/local/bin/$1"; do
-    [ -x "$p" ] && { echo "$p"; return; }; done
-  command -v "$1" 2>/dev/null || echo "/opt/homebrew/bin/$1"; }
-
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SHOT="$HERE/../shot"
-SRC="$HERE/../src"
-export SHOT_HOME=/tmp/shot-test
-rm -rf "$SHOT_HOME"; mkdir -p "$SHOT_HOME/shots"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "$HERE/.."
+mkdir -p "$HERE/../.test-artifacts"
+WORK="$HERE/../.test-artifacts/dryrun-$$"
+mkdir "$WORK" || exit 1
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+mkdir -p "$WORK/repo/src" "$WORK/compiler-work"
+cp "$HERE/../shot" "$HERE/../detect.py" "$WORK/repo/"
+cp "$HERE/../src/"*.swift "$WORK/repo/src/"
+SHOT="$WORK/repo/shot"
+SRC="$WORK/repo/src"
+export TMPDIR="$WORK/compiler-work"
+export SHOT_HOME="$WORK/home"
+export PYTHONDONTWRITEBYTECODE=1
+mkdir -p "$SHOT_HOME/shots"
+# Compile only in our owned fixture workspace. Never run install.sh, which
+# changes user hotkeys/symlinks and performs a real capture permission probe.
+for shim in ocr annotate clip context; do
+  swiftc -O "$SRC/$shim.swift" -o "$SRC/$shim" || exit 1
+done
+swiftc -O "$HERE/fixture_image.swift" -o "$WORK/fixture-image" || exit 1
 FIX="$SHOT_HOME/shots/fixture.png"
 FIX2="$SHOT_HOME/fixture2.png"
 
@@ -29,7 +40,7 @@ info() { printf '       %s\n' "$*"; }
 head_(){ printf '\n\033[1;36m%s\033[0m\n' "$*"; }
 
 head_ "0. Environment"
-doc=$("$SHOT" doctor 2>&1); docrc=$?
+doc=$("$SHOT" doctor --no-capture 2>&1); docrc=$?
 # Assert the POSITIVE, and assert the command survived. The old form was
 #   grep -q "MISS.*$need" && bad || ok
 # which reports PASS when `shot doctor` crashes: a traceback contains no "MISS",
@@ -46,8 +57,7 @@ else
 fi
 
 head_ "1. Fixture — render text, then read it back"
-$(brewbin ffmpeg) -hide_banner -loglevel error -f lavfi -i color=c=white:s=1400x520 \
-  -frames:v 1 -y "$SHOT_HOME/blank.png"
+"$WORK/fixture-image" blank "$SHOT_HOME/blank.png" 1400 520 || exit 1
 python3 - <<PY
 import json,subprocess,sys
 # Assembled at runtime from fragments ON PURPOSE. These are fake (AWS's own
@@ -99,8 +109,7 @@ head_ "2b. The formats that got through review twice"
 # fail on a defect is not evidence about that defect. These are the exact
 # formats an adversarial review proved survived `redact --auto` with rc=0 and
 # "nothing matched - image unchanged", which reads as an all-clear.
-$(brewbin ffmpeg) -hide_banner -loglevel error -f lavfi -i color=c=white:s=1400x520 \
-  -frames:v 1 -y "$SHOT_HOME/blank2.png" 2>/dev/null
+"$WORK/fixture-image" blank "$SHOT_HOME/blank2.png" 1400 520 || exit 1
 python3 - <<FIXTURE2
 import json, subprocess, sys
 # fake, and assembled from fragments so the repo never carries a secret-shaped
@@ -201,9 +210,7 @@ done
 echo "$after" | grep -q "normal line that must survive" \
   && ok "the harmless line still reads back" || bad "redaction destroyed innocent content"
 # an opaque fill must collapse to a single value, unlike a blur
-flat=$($(brewbin ffmpeg) -hide_banner -loglevel error -i "$SHOT_HOME/red.png" \
-  -vf "crop=600:40:40:100,format=gray" -f rawvideo - 2>/dev/null | python3 -c "
-import sys; d=sys.stdin.buffer.read(); print(len(set(d)) if d else 999)")
+flat=$("$WORK/fixture-image" distinct "$SHOT_HOME/red.png" 40 100 600 40)
 [ "${flat:-999}" -le 2 ] && ok "redacted region is a flat fill (distinct=$flat) — irreversible" \
   || bad "redacted region still has $flat distinct values — reversible!"
 
@@ -309,6 +316,5 @@ net=$(grep -nE 'urllib|requests|http://|https://|socket|curl' "$SHOT" | grep -vE
 swiftnet=$(grep -lE 'URLSession|NSURLConnection' "$SRC"/*.swift 2>/dev/null | wc -l | tr -d ' ')
 [ "$swiftnet" = "0" ] && ok "no network calls in the Swift shims" || bad "a shim can reach the network"
 
-rm -rf "$SHOT_HOME"
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

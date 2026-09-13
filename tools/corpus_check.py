@@ -91,7 +91,14 @@ SECRETS = [
     "P/wMLKlKjLRw2C+//LP/SROxR1i9STV7qFCSXR//",
     "hmMGxvAhN9WV3ljp/EzYb+sRlOElzCBohSvWnfpT",
     "n8rXWGTg7G+d80ZG/o80FKkvbJE2YFWOxOt+ijmj",
-    '"SecretAccessKey": "rLIeMKxjX5LF69bvuzU/o7mt8zLj3c/ZLTUsjeAc",',
+    # Preserve this synthetic regression value without a complete credential-shaped literal.
+    '"SecretAccessKey": "' + "".join([
+        'rLIeMKxj',
+        'X5LF69bv',
+        'uzU/o7mt',
+        '8zLj3c/Z',
+        'LTUsjeAc',
+    ]) + '",',
     # an all-LETTER key: only ever 2 character classes, the same structural
     # exclusion that hid every hex credential in round 1
     "AbcDefGhiJklMnoPqrStuVwxYzAbcDefGhiJklMn",

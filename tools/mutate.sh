@@ -14,13 +14,22 @@
 #
 #   tools/mutate.sh
 set -uo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$HERE/.."
 
-BACKUP=$(mktemp)
-cp detect.py "$BACKUP"
-restore() { cp "$BACKUP" detect.py; }
-trap restore EXIT INT TERM
+mkdir -p "$HERE/../.test-artifacts"
+WORK="$HERE/../.test-artifacts/mutation-$$"
+mkdir "$WORK" || exit 1
+mkdir "$WORK/tools"
+cp detect.py "$WORK/detect.original"
+cp tools/corpus_check.py "$WORK/tools/"
+cleanup() { cd "$HERE/.." && rm -rf "$WORK"; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+cd "$WORK"
+restore() { cp detect.original detect.py; }
+restore
 
 killed=0; survived=0; expected=0
 mutate() {
