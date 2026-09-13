@@ -2,21 +2,23 @@
 
 Capture, annotate, read and **redact** screenshots — entirely on your own machine.
 
-The published native **RAPP Shot 1.3.0** app uses SwiftUI/AppKit and ScreenCaptureKit.
+The native **RAPP Shot 1.3.1** app uses SwiftUI/AppKit and ScreenCaptureKit.
 Text recognition is Apple's Vision framework; annotation is CoreGraphics.
 There is no account, upload, share link, or cloud processing. The original
 `shot` CLI remains available, using macOS `screencapture` and its existing shims.
 
-The published download remains 1.3.0. The current native source targets the
-unreleased 1.3.1 successor; existing release metadata and artifacts remain
-unchanged.
-
 ## Native app — macOS 14 or later
 
-Download **[RAPP Shot v1.3.0](https://github.com/kody-w/rapp-shot/releases/tag/v1.3.0)**:
+Download **[RAPP Shot v1.3.1](https://github.com/kody-w/rapp-shot/releases/tag/v1.3.1)**:
 
-- [Apple Silicon (arm64 ZIP)](https://github.com/kody-w/rapp-shot/releases/download/v1.3.0/rapp_shot-1.3.0-arm64.zip)
-- [Intel (x86_64 ZIP)](https://github.com/kody-w/rapp-shot/releases/download/v1.3.0/rapp_shot-1.3.0-x86_64.zip)
+- [Apple Silicon (arm64 ZIP)](https://github.com/kody-w/rapp-shot/releases/download/v1.3.1/rapp_shot-1.3.1-arm64.zip)
+  (`421,154` bytes, SHA-256 `a9b0356c22e90b6af24fb4dbd386030fa45582f8152552b2a7aed391bdb8ec77`)
+  · [evidence](https://github.com/kody-w/rapp-shot/releases/download/v1.3.1/rapp_shot-1.3.1-arm64.zip.evidence.38ed2c96f1bfd6217ec8034c4901f3386a01a5d8592f1e5413912d035d2e3686.json)
+  · [provenance](https://github.com/kody-w/rapp-shot/releases/download/v1.3.1/rapp_shot-1.3.1-arm64.release-result.json)
+- [Intel (x86_64 ZIP)](https://github.com/kody-w/rapp-shot/releases/download/v1.3.1/rapp_shot-1.3.1-x86_64.zip)
+  (`450,998` bytes, SHA-256 `8db8340dfd6597c6ae8b3edf476b67c05cf229295aaffe017b7925f52ae91d4f`)
+  · [evidence](https://github.com/kody-w/rapp-shot/releases/download/v1.3.1/rapp_shot-1.3.1-x86_64.zip.evidence.e37f64f6199ec55975bcb0db90dc7b4aa45ac7bbc9017dc83d5827b49943fbbe.json)
+  · [provenance](https://github.com/kody-w/rapp-shot/releases/download/v1.3.1/rapp_shot-1.3.1-x86_64.release-result.json)
 
 In Finder, double-click the ZIP, move **RAPPShot.app** to `/Applications` (or
 `~/Applications`), then open the app normally. No terminal installer is required.
@@ -28,6 +30,12 @@ content-addressed report hashes are recorded in `rapp_shot/manifest.json`.
 These are publisher release reports, not independent Apple authentication or
 RAPP/1 acceptance by a catalog. Do not disable Gatekeeper or reset TCC to install.
 An unsigned local developer build is not equivalent to the released build.
+The release is built from source
+[`3310780e800da97c6c9cf4b1e3c489158de0e2ed`](https://github.com/kody-w/rapp-shot/tree/3310780e800da97c6c9cf4b1e3c489158de0e2ed)
+with [matching-source CI](https://github.com/kody-w/rapp-shot/actions/runs/34767506591).
+The later metadata-only commit does not change that source or move the tag.
+There are no bundled helper executables; stapling and Gatekeeper assessment
+apply to the enclosing application.
 
 1. Nothing is captured at startup. **Open Image** works without screen permission.
 2. For capture, click **Enable Screen Recording** and grant it to **RAPP Shot**,
