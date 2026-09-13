@@ -167,13 +167,16 @@ def cmd_doctor(a):
                        ("clipboard shim", CLIP), ("context shim", CTX)):
         print(f"  {'ok  ' if os.access(path, os.X_OK) else 'MISS'} {name}")
     print(f"  {'ok  ' if shutil.which('screencapture') else 'MISS'} screencapture")
-    probe = os.path.join(ROOT, "probe.png")
-    run(["screencapture", "-x", "-t", "png", probe], timeout=30)
-    ok = os.path.exists(probe)
-    print(f"  {'ok  ' if ok else 'MISS'} screen capture works"
-          f"{'' if ok else ' — grant Screen Recording to your terminal'}")
-    if ok:
-        os.remove(probe)
+    if getattr(a, "no_capture", False):
+        print("  SKIP screen capture probe (--no-capture); no permission was requested")
+    else:
+        probe = os.path.join(ROOT, "probe.png")
+        run(["screencapture", "-x", "-t", "png", probe], timeout=30)
+        ok = os.path.exists(probe)
+        print(f"  {'ok  ' if ok else 'MISS'} screen capture works"
+              f"{'' if ok else ' — grant Screen Recording to your terminal'}")
+        if ok:
+            os.remove(probe)
     pats = load_patterns()
     print(f"  ok   {len(detect.PATTERNS)} built-in patterns + {len(pats)} custom, "
           f"plus homoglyph-normalised shape matching")
@@ -418,7 +421,10 @@ def main():
     p = argparse.ArgumentParser(prog="shot", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd")
 
-    sub.add_parser("doctor", help="environment check").set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("doctor", help="environment check")
+    s.add_argument("--no-capture", action="store_true",
+                   help="check installed components without capturing the screen or requesting permission")
+    s.set_defaults(fn=cmd_doctor)
 
     s = sub.add_parser("capture", help="take a screenshot")
     s.add_argument("--mode", choices=["region", "window", "screen"], default="region")

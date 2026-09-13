@@ -14,11 +14,27 @@ brewbin() { for p in "/opt/homebrew/bin/$1" "/usr/local/bin/$1"; do
     [ -x "$p" ] && { echo "$p"; return; }; done
   command -v "$1" 2>/dev/null || echo "/opt/homebrew/bin/$1"; }
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SHOT="$HERE/../shot"
-SRC="$HERE/../src"
-export SHOT_HOME=/tmp/shot-test
-rm -rf "$SHOT_HOME"; mkdir -p "$SHOT_HOME/shots"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "$HERE/.."
+mkdir -p "$HERE/../.test-artifacts"
+WORK="$HERE/../.test-artifacts/dryrun-$$"
+mkdir "$WORK" || exit 1
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+mkdir -p "$WORK/repo/src" "$WORK/compiler-work"
+cp "$HERE/../shot" "$HERE/../detect.py" "$WORK/repo/"
+cp "$HERE/../src/"*.swift "$WORK/repo/src/"
+SHOT="$WORK/repo/shot"
+SRC="$WORK/repo/src"
+export TMPDIR="$WORK/compiler-work"
+export SHOT_HOME="$WORK/home"
+mkdir -p "$SHOT_HOME/shots"
+# Compile only in our owned fixture workspace. Never run install.sh, which
+# changes user hotkeys/symlinks and performs a real capture permission probe.
+for shim in ocr annotate clip context; do
+  swiftc -O "$SRC/$shim.swift" -o "$SRC/$shim" || exit 1
+done
 FIX="$SHOT_HOME/shots/fixture.png"
 FIX2="$SHOT_HOME/fixture2.png"
 
@@ -29,7 +45,7 @@ info() { printf '       %s\n' "$*"; }
 head_(){ printf '\n\033[1;36m%s\033[0m\n' "$*"; }
 
 head_ "0. Environment"
-doc=$("$SHOT" doctor 2>&1); docrc=$?
+doc=$("$SHOT" doctor --no-capture 2>&1); docrc=$?
 # Assert the POSITIVE, and assert the command survived. The old form was
 #   grep -q "MISS.*$need" && bad || ok
 # which reports PASS when `shot doctor` crashes: a traceback contains no "MISS",
@@ -309,6 +325,5 @@ net=$(grep -nE 'urllib|requests|http://|https://|socket|curl' "$SHOT" | grep -vE
 swiftnet=$(grep -lE 'URLSession|NSURLConnection' "$SRC"/*.swift 2>/dev/null | wc -l | tr -d ' ')
 [ "$swiftnet" = "0" ] && ok "no network calls in the Swift shims" || bad "a shim can reach the network"
 
-rm -rf "$SHOT_HOME"
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

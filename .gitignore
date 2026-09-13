@@ -6,3 +6,9 @@ src/context
 .DS_Store
 __pycache__/
 *.pyc
+native/.build/
+native/.swiftpm/
+native/*.xcodeproj/
+native/build/
+.test-artifacts/
+native/.test-artifacts/
