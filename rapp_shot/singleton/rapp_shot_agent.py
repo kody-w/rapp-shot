@@ -1,9 +1,9 @@
 """RAPP Shot — Capture, annotate and redact screenshots on-device. Finds credentials with OCR and paints them out opaquely.
 
-Runs entirely on the machine the brainstem is running on. This agent is a thin,
-allowlisted wrapper over the shot CLI that ships in the same repository: every
-action maps to one subcommand with validated arguments, so the agent cannot be
-talked into running arbitrary shell.
+Optional integration for an already-installed RAPP Shot app or legacy shot CLI.
+Native capture/edit/OCR requests are staged for user review, never silently
+captured or copied. Legacy CLI actions remain allowlisted subcommands; no shell
+is used. Installing this Python file does not install the native application.
 
 Stdlib only.
 """
@@ -19,8 +19,8 @@ from agents.basic_agent import BasicAgent
 __manifest__ = {
     "schema": "rapp-agent/1.0",
     "name": "rapp_shot",
-    "version": "1.2.0",
-    "description": "Capture, annotate and redact screenshots on-device. Finds credentials with OCR and paints them out opaquely.",
+    "version": "1.3.0",
+    "description": "Capture and edit screenshots locally, with opaque credential redaction and preview review. Native requests require user confirmation; detection is not an all-clear.",
     "author": "@kody-w",
     "tags": ["screenshot", "ocr", "redaction", "privacy", "local-first"],
     "dependencies": ["@rapp/basic_agent"],
@@ -163,7 +163,7 @@ class RappShotAgent(BasicAgent):
         self.name = "RappShot"
         self.metadata = {
             "name": self.name,
-            "description": "Screenshots that are safe to share. Captures, reads text with on-device OCR, and redacts credentials opaquely before sharing. Actions: doctor, capture, ocr, redact, annotate, list.",
+            "description": "Screenshots for review before sharing. Native capture/edit/OCR requests are staged in an installed RAPP Shot app; a user starts capture and approves the final preview before copy/export. Local OCR and opaque redaction can miss credentials. Explicit SHOT_CLI keeps the legacy backend. Actions: doctor, capture, ocr, redact, annotate, list.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -177,7 +177,7 @@ class RappShotAgent(BasicAgent):
                     "name": {"type": "string", "description": "Label for the capture."},
                     "auto": {"type": "boolean", "description": "Redaction: find secrets by OCR."},
                     "dry_run": {"type": "boolean", "description": "Redaction: report without painting."},
-                    "copy": {"type": "boolean", "description": "Put the result on the clipboard."},
+                    "copy": {"type": "boolean", "description": "Request clipboard output. Native mode requires final preview approval; the legacy CLI retains its copy behavior."},
                     "box": {"type": "string", "description": "Manual region as x,y,w,h."},
                     "text": {"type": "string", "description": "Annotation text as x,y,message."},
                     "limit": {"type": "integer", "description": "Max rows for list."},
