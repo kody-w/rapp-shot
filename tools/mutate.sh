@@ -14,6 +14,7 @@
 #
 #   tools/mutate.sh
 set -uo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$HERE/.."
 

@@ -132,6 +132,43 @@ Tests do not capture your desktop, modify TCC, or write your clipboard/history.
 Live display/window/region capture and the grant/deny/relaunch permission UX still
 require an explicit human test on each supported macOS/device configuration.
 
+### Same-repository native CI
+
+`.github/workflows/native.yml` runs on **macos-latest** and **macos-15-intel** for
+pushes, pull requests, and manual dispatch. Both jobs use the same local command:
+
+```bash
+python3 tools/native_ci.py
+```
+
+Developer prerequisites are macOS, Xcode/Swift, Python 3, and XcodeGen. The runner
+uses owned project-local build/fixture directories and verifies the immutable
+shared-package locks. It runs `swift test -j 2`, a release Swift build, adapter
+tests, runner-safety tests, detector parity, the legacy synthetic/mutation suite,
+and an unsigned native Xcode workspace build with `-jobs 2`. Legacy image
+generation and pixel inspection use a test-only CoreGraphics helper, not ffmpeg.
+
+Safe noninteractive native verification entrypoints are:
+
+```bash
+RAPPShot.app/Contents/MacOS/RAPPShot --diagnose
+RAPPShot.app/Contents/MacOS/RAPPShot --ui-smoke-test
+```
+
+The second briefly opens the native window, checks idle startup and zero capture,
+permission-request, source-enumeration, and clipboard activity, then exits.
+Neither entrypoint captures pixels or requests permission. CI never runs
+`install.sh`, live `shot capture`, plain legacy `shot doctor`, TCC modification, or
+signing/notarization commands. No signing credentials are required.
+
+Logs and `rapp-shot-ci/1.0` reports remain under `.test-artifacts/native-ci-*/`;
+owned build/cache/fixture trees are removed afterward. These reports are
+**verification only, not Apple release evidence**. The workflow has read-only
+repository permission and no publishing step. For release-source binding, the
+parent must obtain a successful public push/dispatch Actions run at the exact
+native-build commit; CI checks that its clean checkout equals `GITHUB_SHA`.
+Local results alone do not claim that a public Actions run has succeeded.
+
 ## The reason to have this
 
 ```bash
@@ -270,8 +307,9 @@ captured — deterministic, and your desktop never ends up in a test file. It
 asserts that every secret class is detected, that none survives redaction, that
 the harmless line does, and that the redacted region is genuinely flat.
 Shims and mutation tests operate on isolated copies under `.test-artifacts/` and
-clean up their owned workspace. The suite requires the developer Swift toolchain,
-Python 3, and ffmpeg; these are not native-app runtime requirements.
+clean up their owned workspace. The suite requires the developer Swift toolchain
+and Python 3, with only Apple frameworks for fixture images; these are not
+native-app runtime requirements.
 Use `shot doctor --no-capture` for automation: plain legacy `shot doctor` still
 performs its original live capture probe.
 
