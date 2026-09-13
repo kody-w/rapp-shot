@@ -135,7 +135,8 @@ def main():
         ], cwd=NATIVE, timeout=600)
         app = work / "xcode/Build/Products/Release/RAPPShot.app/Contents/MacOS/RAPPShot"
         diagnostics = json.loads(run("native-diagnostics", [app, "--diagnose"], timeout=30))
-        if diagnostics.get("captureAttempted") is not False or diagnostics.get("captureOnLaunch") is not False:
+        if diagnostics.get("version") != "1.3.1" or diagnostics.get("captureAttempted") is not False \
+                or diagnostics.get("captureOnLaunch") is not False:
             raise RuntimeError("Unsafe native diagnostic state")
         startup = json.loads(run("native-startup", [app, "--ui-smoke-test"], timeout=45))
         verify_startup(startup)

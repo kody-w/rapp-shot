@@ -16,7 +16,7 @@ enum NativeDiagnostics {
             case "--diagnose":
                 guard arguments.count == 1 else { throw ShotError.invalidAction("--diagnose takes no other arguments.") }
                 try output([
-                    "product": "RAPPShot", "displayName": "RAPP Shot", "version": "1.3.0",
+                    "product": "RAPPShot", "displayName": "RAPP Shot", "version": "1.3.1",
                     "minimumMacOS": "14.0", "bundleID": "io.rapp.shot",
                     "screenRecording": CGPreflightScreenCaptureAccess() ? "authorized" : "required",
                     "permissionScope": "current process; verify the normally launched GUI app separately",

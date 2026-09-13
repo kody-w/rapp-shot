@@ -372,7 +372,7 @@ struct ShotSettingsView: View {
                 Text("RAPP Shot requests Screen Recording only. It never requests microphone or camera access. Vision OCR, custom rules, annotation, and PNG export run on this Mac. No cloud service is used.")
                 Text("Custom rules are read from \(model.patternsURL.path). Invalid rules block automatic export with an error; Python-only regex extensions may need ICU-compatible syntax.")
             }
-            Section("RAPP Shot 1.3.0") {
+            Section("RAPP Shot 1.3.1") {
                 Text("macOS 14 or later. The native app needs no Swift compiler, Python, Homebrew, or helper service at runtime. CLI/Hammerspoon compatibility remains separate.")
             }
         }.formStyle(.grouped).padding().frame(width: 600, height: 440)

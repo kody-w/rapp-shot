@@ -2,10 +2,14 @@
 
 Capture, annotate, read and **redact** screenshots — entirely on your own machine.
 
-The native **RAPP Shot 1.3.0** app uses SwiftUI/AppKit and ScreenCaptureKit.
+The published native **RAPP Shot 1.3.0** app uses SwiftUI/AppKit and ScreenCaptureKit.
 Text recognition is Apple's Vision framework; annotation is CoreGraphics.
 There is no account, upload, share link, or cloud processing. The original
 `shot` CLI remains available, using macOS `screencapture` and its existing shims.
+
+The published download remains 1.3.0. The current native source targets the
+unreleased 1.3.1 successor; existing release metadata and artifacts remain
+unchanged.
 
 ## Native app — macOS 14 or later
 
@@ -234,6 +238,8 @@ NOT SAFE TO SHARE — 1 detected secret(s) are STILL readable after redaction
 ```
 
 "Painted out" is a claim about pixels, so it is checked against the pixels.
+If that verification OCR cannot run or cannot be parsed, the legacy command also
+returns non-zero, labels the rendered file unverified, and refuses `--copy`.
 
 ### Redaction is opaque, and that is not a style choice
 

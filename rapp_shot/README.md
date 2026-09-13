@@ -3,6 +3,8 @@
 RAPP Shot 1.3.0 is a native macOS capture/editor with local Vision OCR and opaque
 credential redaction. Automatic detection can miss secrets; inspect the final
 preview before copying or exporting. Pixelation is cosmetic, not redaction.
+The current native source targets the unreleased 1.3.1 successor; the published
+desktop descriptors below intentionally remain bound to 1.3.0.
 
 This folder supplies **optional secondary integration**: Python singleton/twin
 adapters and a browser UI for a compatible RAPP host. The existing twin

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """No-capture adapter tests. Every process launch is mocked."""
+import contextlib
+import importlib.machinery
 import importlib.util
+import io
 import os
 from pathlib import Path
 import plistlib
@@ -39,6 +42,14 @@ def load_adapters():
         return loaded
 
 
+def load_legacy_cli():
+    loader = importlib.machinery.SourceFileLoader("shot_legacy_fixture", str(ROOT / "shot"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
 class AdapterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -70,6 +81,13 @@ class AdapterTests(unittest.TestCase):
                     self.assertIsNone(module._native_app())
         finally:
             shutil.rmtree(directory)
+
+    def test_integration_copy_distinguishes_native_storage_from_host_chat(self):
+        ui = (ROOT / "rapp_shot/ui/index.html").read_text()
+        soul = (ROOT / "rapp_shot/twin/soul.md").read_text()
+        self.assertIn("Native captures stay in memory", ui)
+        self.assertIn("conversation model may be remote", ui)
+        self.assertIn("preserved legacy CLI", soul)
 
     def test_capture_is_staged_without_capture_or_clipboard_execution(self):
         for module in self.adapters:
@@ -154,6 +172,45 @@ class AdapterTests(unittest.TestCase):
     def test_both_adapters_have_identical_compatibility_logic(self):
         self.assertEqual((ROOT / "rapp_shot/singleton/rapp_shot_agent.py").read_bytes(),
                          (ROOT / "rapp_shot/twin/agents/rapp_shot_agent.py").read_bytes())
+
+    def test_legacy_redaction_verification_failure_never_copies_or_succeeds(self):
+        module = load_legacy_cli()
+        arguments = types.SimpleNamespace(
+            image="fixture.png", auto=True, box=[], dry_run=False,
+            out="/fixture/redacted.png", copy=True,
+        )
+        first_pass = {
+            "boxes": [{"t": "fixture.user@example.test", "x": 1, "y": 2, "w": 30, "h": 10}]
+        }
+        launched = []
+        output, error = io.StringIO(), io.StringIO()
+        with patch.object(module, "resolve", return_value="/fixture/input.png"), \
+             patch.object(module, "ocr", side_effect=[first_pass, module.ShimMissing("fixture verification failure")]), \
+             patch.object(module, "load_patterns", return_value=[]), \
+             patch.object(module, "apply_ops", return_value=({"width": 100, "height": 100}, None)), \
+             patch.object(module, "run", side_effect=lambda args, **kwargs: launched.append(args)), \
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            code = module.cmd_redact(arguments)
+        self.assertEqual(code, 5)
+        self.assertFalse(launched)
+        self.assertNotIn("opaque and irreversible", output.getvalue())
+        self.assertIn("NOT SAFE TO SHARE", error.getvalue())
+        self.assertIn("was not copied", error.getvalue())
+
+    def test_manual_redaction_does_not_require_automatic_ocr(self):
+        module = load_legacy_cli()
+        arguments = types.SimpleNamespace(
+            image="fixture.png", auto=False, box=["1,2,30,10"], dry_run=False,
+            out="/fixture/redacted.png", copy=True,
+        )
+        launched = []
+        with patch.object(module, "resolve", return_value="/fixture/input.png"), \
+             patch.object(module, "ocr", side_effect=AssertionError("manual redaction must not invoke OCR")), \
+             patch.object(module, "apply_ops", return_value=({"width": 100, "height": 100}, None)), \
+             patch.object(module, "run", side_effect=lambda args, **kwargs: launched.append(args)):
+            code = module.cmd_redact(arguments)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(launched), 1)
 
 
 if __name__ == "__main__":
