@@ -1,10 +1,8 @@
 # RAPP Shot
 
-RAPP Shot 1.3.0 is a native macOS capture/editor with local Vision OCR and opaque
+RAPP Shot 1.3.1 is a native macOS capture/editor with local Vision OCR and opaque
 credential redaction. Automatic detection can miss secrets; inspect the final
 preview before copying or exporting. Pixelation is cosmetic, not redaction.
-The current native source targets the unreleased 1.3.1 successor; the published
-desktop descriptors below intentionally remain bound to 1.3.0.
 
 This folder supplies **optional secondary integration**: Python singleton/twin
 adapters and a browser UI for a compatible RAPP host. The existing twin
@@ -13,7 +11,7 @@ installer, and no retired hatch artifact is needed to install RAPP Shot.
 
 ## Native installation in Finder
 
-1. Download the [v1.3.0 release](https://github.com/kody-w/rapp-shot/releases/tag/v1.3.0)
+1. Download the [v1.3.1 release](https://github.com/kody-w/rapp-shot/releases/tag/v1.3.1)
    ZIP for Apple Silicon (`arm64`) or Intel (`x86_64`).
 2. Double-click the ZIP in Finder and drag `RAPPShot.app` to `/Applications` or
    `~/Applications`. The released app is Developer ID signed, notarized and
@@ -26,9 +24,17 @@ installer, and no retired hatch artifact is needed to install RAPP Shot.
 5. Capture or import, edit locally, prepare the final preview, then review it
    before copy/export.
 
-The manifest pins the exact native-build commit, final ZIPs and immutable
-content-addressed publisher evidence reports. Those reports are not independent
-Apple authentication or RAPP/1 acceptance by the Store.
+The manifest pins native source
+`3310780e800da97c6c9cf4b1e3c489158de0e2ed`, the final ZIP hashes, and immutable
+content-addressed publisher evidence reports:
+
+- [arm64 evidence](https://github.com/kody-w/rapp-shot/releases/download/v1.3.1/rapp_shot-1.3.1-arm64.zip.evidence.38ed2c96f1bfd6217ec8034c4901f3386a01a5d8592f1e5413912d035d2e3686.json)
+  · [provenance](https://github.com/kody-w/rapp-shot/releases/download/v1.3.1/rapp_shot-1.3.1-arm64.release-result.json)
+- [x86_64 evidence](https://github.com/kody-w/rapp-shot/releases/download/v1.3.1/rapp_shot-1.3.1-x86_64.zip.evidence.e37f64f6199ec55975bcb0db90dc7b4aa45ac7bbc9017dc83d5827b49943fbbe.json)
+  · [provenance](https://github.com/kody-w/rapp-shot/releases/download/v1.3.1/rapp_shot-1.3.1-x86_64.release-result.json)
+
+Those reports are not independent Apple authentication or RAPP/1 acceptance by
+the Store. The later metadata-only commit does not change the native source.
 
 ## Actions
 
