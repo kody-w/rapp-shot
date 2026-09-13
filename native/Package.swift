@@ -8,7 +8,10 @@ let package = Package(
         .executable(name: "RAPPShot", targets: ["RAPPShot"]),
         .library(name: "RAPPShotCore", targets: ["RAPPShotCore"])
     ],
-    dependencies: [.package(path: "../../rapp-tools")],
+    dependencies: [
+        .package(url: "https://github.com/kody-w/rapp-tools.git",
+                 revision: "f0bc616c2aed34f2a88888806ed056ec7bafba61")
+    ],
     targets: [
         .target(name: "RAPPShotCore"),
         .executableTarget(name: "RAPPShot", dependencies: [

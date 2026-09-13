@@ -87,9 +87,10 @@ remain. No new RAPP wire fields or network service are introduced.
 The Swift package separates `RAPPShotCore` from the executable `RAPPShot`;
 `native/project.yml` generates a real application target from those same sources.
 Developer builds require Xcode 15+ and XcodeGen. The shared `RAPPDesktopSupport`
-package is a sibling `rapp-tools` checkout during development (the release pipeline
-pins its tested remote commit). RAPP Shot uses its app-support-directory API and
-has no runtime helper executable dependencies.
+package is fetched from `https://github.com/kody-w/rapp-tools.git`, pinned in both
+build definitions to `f0bc616c2aed34f2a88888806ed056ec7bafba61`. SwiftPM and Xcode
+resolved pins are committed; no sibling checkout is required. RAPP Shot uses its
+app-support-directory API and has no runtime helper executable dependencies.
 
 ```bash
 cd native
@@ -98,7 +99,7 @@ export TMPDIR="$PWD/.build/scratch"
 swift test -j 2
 swift build -c release -j 2
 xcodegen generate --spec project.yml
-xcodebuild -project RAPPShot.xcodeproj -scheme RAPPShot \
+xcodebuild -workspace RAPPShot.xcodeproj/project.xcworkspace -scheme RAPPShot \
   -configuration Release -destination 'generic/platform=macOS' \
   -derivedDataPath build -jobs 2 CODE_SIGNING_ALLOWED=NO \
   ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO build
@@ -109,6 +110,12 @@ cd ..
 python3 tools/native_parity.py
 python3 tools/test_native_adapters.py
 ```
+
+The generated workspace is the entry point used for Xcode build verification
+above. Its revision lock is
+`native/RAPPShot.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`;
+other generated project files remain ignored. SwiftPM's separate lock is
+`native/Package.resolved`.
 
 `--ui-smoke-test` briefly opens the real native window, asserts idle/no-image/no
 source-enumeration/no-permission-request startup, emits JSON, and exits.
