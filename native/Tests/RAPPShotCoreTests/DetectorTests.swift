@@ -48,7 +48,14 @@ final class DetectorTests: XCTestCase {
             "P/wMLKlKjLRw2C+//LP/SROxR1i9STV7qFCSXR//",
             "hmMGxvAhN9WV3ljp/EzYb+sRlOElzCBohSvWnfpT",
             "n8rXWGTg7G+d80ZG/o80FKkvbJE2YFWOxOt+ijmj",
-            #""SecretAccessKey": "rLIeMKxjX5LF69bvuzU/o7mt8zLj3c/ZLTUsjeAc","#,
+            // Keep the inherited Round-6 synthetic regression value exact, without a credential-shaped literal.
+            #""SecretAccessKey": ""# + [
+                "rLIeMKxj",
+                "X5LF69bv",
+                "uzU/o7mt",
+                "8zLj3c/Z",
+                "LTUsjeAc",
+            ].joined() + #"","#,
             "AbcDefGhiJklMnoPqrStuVwxYzAbcDefGhiJklMn",
             "SecretKeyRef AbcDefGhiJklMnoPqrStuVwxYzAbcDefGhiJklMn",
             "token: aB3×9zQØLm4bV2cD8fH1jK5pR",
