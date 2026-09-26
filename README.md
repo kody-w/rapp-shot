@@ -1,5 +1,9 @@
 # RAPP Shot
 
+<!-- rapp1:network-header:start -->
+[![RAPP/1](https://kody-w.github.io/rapp-hive-public/portfolio/badges/rapp-shot.svg)](https://github.com/kody-w/rapp-hive-public/blob/main/portfolio/repos/rapp-shot.md) · **New to RAPP?** [Start here: get your Brainstem →](https://github.com/kody-w/rapp-installer#start-here)
+<!-- rapp1:network-header:end -->
+
 Capture, annotate, read and **redact** screenshots — entirely on your own machine.
 
 The native **RAPP Shot 1.3.1** app uses SwiftUI/AppKit and ScreenCaptureKit.
